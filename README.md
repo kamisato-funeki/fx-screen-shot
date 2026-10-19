@@ -134,7 +134,7 @@ INFO  quick screenshot saved C:\Users\<你>\Pictures\fx\Screenshot_2026-10-19_20
 
 安装完成后，托盘出现图标，按 `Shift+F2` 即可开始游戏截图。
 
-> 也可以不安装，直接双击解压目录里的 `fxshot.exe` 绿色运行。首次运行同样会写入开机自启；如不想自启，先用 `fxshot.exe --set-autostart off`，或首次启动时加 `--no-autostart`。
+> 也可以不安装，直接双击解压目录里的 `fxshot.exe` 绿色运行。首次运行同样会写入开机自启；如不想自启，建议先用 `fxshot.exe --set-autostart off` 永久关闭。`--no-autostart` 只跳过本次启动的自启写入与同步，之后正常启动仍会按配置启用。
 
 ### 方式二：从源码构建
 
@@ -366,7 +366,7 @@ autostart_initialized = false
 - `gdi`：始终使用 GDI。静默、无捕获边框，适合大多数桌面与无边框游戏；不支持部分独占全屏和 DRM 内容。
 - `wgc`：始终使用 Windows Graphics Capture，也就是托盘菜单里的“兼容模式”。对全屏游戏、录屏软件更友好，但 Windows 会在被截显示器边缘显示黄色捕获边框。
 
-托盘菜单的“兼容模式”只是 `backend` 在 `auto` 与 `wgc` 之间切换；要强制 GDI，请直接编辑配置文件。
+托盘菜单的“兼容模式”会在 `auto` 与 `wgc` 之间切换（若当前为 `gdi`，则先切到 `wgc`）；要强制 GDI，请直接编辑配置文件。
 
 ---
 
@@ -450,8 +450,8 @@ fxshot.exe --no-autostart
 
 - 确认程序正在运行，托盘有图标。
 - 查看日志是否出现 `hotkeys registered: Shift+F1 and Shift+F2`；若提示注册失败，说明快捷键被其他程序占用。修改 `quick_hotkey` 后重新加载配置。
-- `Shift+F1` / `Shift+F2` 是全局快捷键，会优先被本程序接收；如果游戏内也绑定了同一组合，请二选一。
-- 以管理员权限运行的游戏不会阻止系统级热键，但某些安全软件可能拦截模拟/全局热键。
+- `Shift+F1` / `Shift+F2` 是系统级全局快捷键：注册成功后按键会被本程序接收，不会再传给游戏；如果游戏或其他软件先注册了同一组合，本程序会注册失败。遇到冲突时修改 `config.toml` 中的快捷键。
+- 以管理员权限运行的游戏通常不会阻止系统级热键，但某些安全软件可能拦截全局热键。
 
 ### 2. 截图文件在哪里
 
