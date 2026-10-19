@@ -33,6 +33,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 手动触发时切换到目标标签
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ inputs.tag }}'.Trim()
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
+            throw "版本标签格式无效：'$tag'，应形如 v0.1.0 或 v0.2.0-beta.1"
+          }
+          git fetch --tags --force
+          git rev-parse --verify --quiet "refs/tags/$tag" | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            git checkout --force "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "检出标签 $tag 失败" }
+            Write-Host "已检出标签 $tag，发布产物将与该标签源码一致"
+          } else {
+            Write-Host "标签 $tag 不存在，将从当前提交构建，并由发布步骤创建标签"
+          }
+
       - name: 解析并校验版本号
         id: meta
         shell: pwsh
