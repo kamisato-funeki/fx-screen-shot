@@ -1,0 +1,17 @@
+# 构建产物
+/target/
+/dist/
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# 本工具在项目根目录临时生成的截图
+fxshot-*.png
+
+# 编辑器 / 本地环境
+.vscode/
+.idea/
+*.log
+Thumbs.db
+desktop.ini

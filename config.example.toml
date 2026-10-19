@@ -1,0 +1,31 @@
+# ScreenShot FX 配置示例
+# 实际配置位于 %APPDATA%\ScreenShotFX\config.toml
+# 修改后可在托盘菜单选择“重新加载配置”，无需重启。
+
+# 保存目录，支持 %USERPROFILE% 等环境变量。
+save_dir = "%USERPROFILE%\\Pictures\\fx"
+
+# 全局快捷键。必须至少包含一个修饰键（Shift/Ctrl/Alt/Win）。
+select_hotkey = "Shift+F1"
+quick_hotkey = "Shift+F2"
+
+# 截图后端：
+#   auto = 普通屏幕用 GDI（静默），HDR 屏幕自动用 WGC
+#   gdi  = 始终使用 GDI
+#   wgc  = 兼容模式，始终使用 WGC（屏幕边缘可能出现黄色指示框）
+backend = "auto"
+
+# 截图后是否复制到剪贴板。
+clipboard = true
+
+# 窗口/屏幕边缘吸附距离（96 DPI 基准像素，按显示器 DPI 缩放）。
+snap_distance = 10
+
+# WGC HDR 色调映射曝光，范围 0.25 - 4.0。
+hdr_exposure = 1.0
+
+# 开机自启。首次运行会自动设为 true。
+autostart = true
+
+# 内部标记：用户是否已经完成首次自启配置（一般不需要手动修改）。
+autostart_initialized = false

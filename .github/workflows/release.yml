@@ -1,0 +1,142 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本标签，例如 v0.1.0（必须与 Cargo.toml 的 version 一致）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  release:
+    name: 构建并发布 Windows x64 版本
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: 解析并校验版本号
+        id: meta
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            '${{ inputs.tag }}'
+          } else {
+            '${{ github.ref_name }}'
+          }
+          $tag = $tag.Trim()
+          if ($tag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
+            throw "版本标签格式无效：'$tag'，应形如 v0.1.0 或 v0.2.0-beta.1"
+          }
+          $version = $tag.Substring(1)
+          $toml = Get-Content -Raw Cargo.toml
+          if ($toml -notmatch '(?m)^\s*version\s*=\s*"([^"]+)"') {
+            throw '无法从 Cargo.toml 读取 version'
+          }
+          $cargoVersion = $Matches[1]
+          if ($version -ne $cargoVersion) {
+            throw "标签版本 $version 与 Cargo.toml 的 version=$cargoVersion 不一致，请先同步版本号"
+          }
+          $rc = Get-Content -Raw assets/app.rc
+          if ($rc -notmatch 'FILEVERSION\s+(\d+),(\d+),(\d+),\d+') {
+            throw '无法从 assets/app.rc 读取 FILEVERSION'
+          }
+          $rcVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+          if ($version -ne $rcVersion) {
+            throw "标签版本 $version 与 assets/app.rc 的 FILEVERSION=$rcVersion 不一致，请先同步版本号"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "zip_name=fxshot-$version-windows-x64.zip" >> $env:GITHUB_OUTPUT
+          Write-Host "准备发布 $tag（版本 $version）"
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: 缓存 Cargo 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: fxshot-release
+
+      - name: 运行测试
+        run: cargo test --all-targets --locked
+
+      - name: 构建 Release
+        run: cargo build --release --locked
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/package.ps1 -Version '${{ steps.meta.outputs.version }}' -SkipBuild
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(
+            'dist/fxshot.exe',
+            'dist/${{ steps.meta.outputs.zip_name }}',
+            'dist/SHA256SUMS.txt'
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) { throw "缺少发布产物：$file" }
+            Get-Item $file | Select-Object Name, Length | Format-Table -AutoSize
+          }
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: 上传工作流产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: fxshot-${{ steps.meta.outputs.version }}-windows-x64
+          path: |
+            dist/fxshot.exe
+            dist/${{ steps.meta.outputs.zip_name }}
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ScreenShot FX ${{ steps.meta.outputs.tag }}
+          body: |
+            ScreenShot FX ${{ steps.meta.outputs.tag }}（Windows 11 x64）
+
+            **游戏快速截图：安装后按 `Shift+F2`，静默保存到 `图片\fx`。**
+
+            - `Shift+F1`：冻结屏幕并进入选区截图
+            - `Shift+F2`：截取鼠标所在显示器，无遮罩、无提示音，适合游戏
+            - 下载 `fxshot-${{ steps.meta.outputs.version }}-windows-x64.zip`，解压后运行 `scripts\install.ps1`
+            - `fxshot.exe` 为单文件绿色版，可直接运行
+            - `SHA256SUMS.txt` 包含下载文件的 SHA-256 校验值
+
+            完整说明见 [README](https://github.com/kamisato-funeki/fx-screen-shot#readme)。
+          files: |
+            dist/fxshot.exe
+            dist/${{ steps.meta.outputs.zip_name }}
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(steps.meta.outputs.version, '-') }}

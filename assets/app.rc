@@ -1,0 +1,25 @@
+1 ICON "app.ico"
+1 24 "app.manifest"
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName", "fxshot"
+            VALUE "FileDescription", "ScreenShot FX"
+            VALUE "FileVersion", "0.1.0.0"
+            VALUE "InternalName", "fxshot"
+            VALUE "OriginalFilename", "fxshot.exe"
+            VALUE "ProductName", "ScreenShot FX"
+            VALUE "ProductVersion", "0.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END
