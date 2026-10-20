@@ -4,7 +4,8 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::Result;
 use windows::core::{BOOL, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, E_ACCESSDENIED, HANDLE, HINSTANCE, HWND,
+    LPARAM, LRESULT, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
@@ -79,25 +80,48 @@ impl Drop for BusyGuard {
 }
 
 pub fn run(no_autostart: bool) -> i32 {
-    let mutex_name = win_util::wide("Local\\ScreenShotFX.Singleton");
+    // Portable/test hook: lets a second instance use its own singleton mutex
+    // so it can run next to an installed copy with different hotkeys.
+    let mutex_name_text = std::env::var("FXSHOT_MUTEX_NAME")
+        .ok()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Local\\ScreenShotFX.Singleton".to_string());
+    let mutex_name = win_util::wide(&mutex_name_text);
     let mutex = match unsafe { CreateMutexW(None, true, PCWSTR(mutex_name.as_ptr())) } {
-        Ok(handle) => handle,
+        Ok(handle) => {
+            if unsafe { GetLastError() }.0 == ERROR_ALREADY_EXISTS.0 {
+                if let Some(existing) = find_main_window() {
+                    let _ = unsafe {
+                        PostMessageW(Some(existing), WM_APP_ALREADY_RUNNING, WPARAM(0), LPARAM(0))
+                    };
+                }
+                let _ = unsafe { CloseHandle(handle) };
+                logging::info("another instance is already running");
+                return 0;
+            }
+            Some(handle)
+        }
+        Err(err) if err.code() == E_ACCESSDENIED => {
+            // Restricted tokens sometimes do not have a usable default DACL
+            // for named mutexes. Keep the app usable by falling back to the
+            // hidden main window for the single-instance check.
+            logging::warn(&format!(
+                "CreateMutexW denied ({err}); using window-based single-instance check"
+            ));
+            if let Some(existing) = find_main_window() {
+                let _ = unsafe {
+                    PostMessageW(Some(existing), WM_APP_ALREADY_RUNNING, WPARAM(0), LPARAM(0))
+                };
+                logging::info("another instance is already running");
+                return 0;
+            }
+            None
+        }
         Err(err) => {
             logging::error(&format!("CreateMutexW failed: {err}"));
             return 1;
         }
     };
-
-    if unsafe { GetLastError() }.0 == ERROR_ALREADY_EXISTS.0 {
-        if let Some(existing) = find_main_window() {
-            let _ = unsafe {
-                PostMessageW(Some(existing), WM_APP_ALREADY_RUNNING, WPARAM(0), LPARAM(0))
-            };
-        }
-        let _ = unsafe { CloseHandle(mutex) };
-        logging::info("another instance is already running");
-        return 0;
-    }
 
     let loaded = config::load_or_create();
     let mut warnings = loaded.warnings;
@@ -146,7 +170,7 @@ pub fn run(no_autostart: bool) -> i32 {
         .is_err()
     {
         logging::error("runtime state already initialized");
-        let _ = unsafe { CloseHandle(mutex) };
+        close_mutex(mutex);
         return 1;
     }
 
@@ -154,7 +178,7 @@ pub fn run(no_autostart: bool) -> i32 {
         Ok(module) => HINSTANCE(module.0),
         Err(err) => {
             logging::error(&format!("GetModuleHandleW failed: {err}"));
-            let _ = unsafe { CloseHandle(mutex) };
+            close_mutex(mutex);
             return 1;
         }
     };
@@ -172,7 +196,7 @@ pub fn run(no_autostart: bool) -> i32 {
         let error = unsafe { GetLastError() };
         if error.0 != 1410 {
             logging::error(&format!("RegisterClassExW failed: {}", error.0));
-            let _ = unsafe { CloseHandle(mutex) };
+            close_mutex(mutex);
             return 1;
         }
     }
@@ -197,7 +221,7 @@ pub fn run(no_autostart: bool) -> i32 {
         Ok(hwnd) => hwnd,
         Err(err) => {
             logging::error(&format!("CreateWindowExW failed: {err}"));
-            let _ = unsafe { CloseHandle(mutex) };
+            close_mutex(mutex);
             return 1;
         }
     };
@@ -246,10 +270,16 @@ pub fn run(no_autostart: bool) -> i32 {
     cleanup(hwnd);
     unsafe {
         let _ = DestroyWindow(hwnd);
-        let _ = CloseHandle(mutex);
     }
+    close_mutex(mutex);
     logging::info("fxshot stopped");
     0
+}
+
+fn close_mutex(mutex: Option<HANDLE>) {
+    if let Some(mutex) = mutex {
+        let _ = unsafe { CloseHandle(mutex) };
+    }
 }
 
 fn fallback_hotkeys() -> (Hotkey, Hotkey) {
@@ -819,7 +849,7 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         overlay::WM_APP_OVERLAY_KEY => {
-            overlay::handle_key(wparam.0 as u32, lparam.0 != 0);
+            overlay::handle_key(wparam.0 as u32, lparam.0 as u32);
             LRESULT(0)
         }
         WM_TIMER => {

@@ -7,6 +7,7 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Shell::{
     FOLDERID_Pictures, FOLDERID_RoamingAppData, SHGetKnownFolderPath, ShellExecuteW,
     KF_FLAG_DEFAULT,
@@ -72,6 +73,10 @@ pub fn get_cursor_pos() -> Option<Point> {
     } else {
         None
     }
+}
+
+pub fn key_down(vk: u32) -> bool {
+    (unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000) != 0
 }
 
 pub fn current_process_id() -> u32 {

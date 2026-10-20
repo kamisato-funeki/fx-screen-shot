@@ -12,21 +12,23 @@ use windows::Win32::Graphics::Gdi::{
     HFONT, HGDIOBJ, NULL_BRUSH, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY,
     TRANSPARENT,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL};
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_C;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, LoadCursorW, RegisterClassExW, SetCursor,
     SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HCURSOR, HWND_TOPMOST, IDC_ARROW, IDC_CROSS,
     IDC_HAND, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, SWP_SHOWWINDOW,
     SW_SHOW, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SYSKEYDOWN, WNDCLASSEXW,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SYSKEYDOWN, WM_TIMER,
+    WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::capture::Frame;
 use crate::geometry::{Point, Rect};
 use crate::monitor::MonitorInfo;
 
-use super::{toolbar, CursorKind, OverlaySession, Phase};
+use super::{color, toolbar, CursorKind, OverlaySession, Phase};
+
+pub const TIMER_COLOR_PICK: usize = 0x31;
 
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
@@ -264,8 +266,18 @@ unsafe extern "system" fn overlay_proc(
             LRESULT(0)
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
-            let ctrl = (unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) } as u16 & 0x8000) != 0;
-            super::handle_key(wparam.0 as u32, ctrl);
+            let repeat = (lparam.0 & (1 << 30)) != 0;
+            if wparam.0 as u32 == VK_C.0 as u32 && repeat {
+                return LRESULT(0);
+            }
+            let modifiers = super::keyboard::current_modifiers();
+            super::handle_key(wparam.0 as u32, modifiers);
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            if wparam.0 == TIMER_COLOR_PICK {
+                super::with_session_mut(|session| session.on_tick());
+            }
             LRESULT(0)
         }
         WM_DESTROY => LRESULT(0),
@@ -364,6 +376,24 @@ pub(super) fn paint_session(session: &OverlaySession, overlay_index: usize) {
         }
     }
 
+    if session.pointer_on_monitor {
+        if let Some(pointer) = session.pointer {
+            if monitor.rect.contains(pointer) {
+                let notice = session.copy_notice.as_ref().map(|(text, _)| text.as_str());
+                let context = color::DrawContext {
+                    monitor,
+                    origin: Point::new(monitor.rect.left, monitor.rect.top),
+                    pointer,
+                    format: session.color_format,
+                    notice,
+                    frame: &session.frame,
+                    monitors: &session.monitors,
+                };
+                color::draw(overlay.back_dc, &context);
+            }
+        }
+    }
+
     force_opaque(overlay.back_bits, width as usize * height as usize);
 
     unsafe {
@@ -447,7 +477,7 @@ fn draw_label(session: &OverlaySession, dc: HDC, selection: Rect, monitor: &Moni
     let text = parts.join("   ");
 
     let dpi = monitor.dpi;
-    let font = make_font(dpi);
+    let font = ui_font(dpi, 12);
     let old_font = if font.0.is_null() {
         HGDIOBJ(std::ptr::null_mut())
     } else {
@@ -511,11 +541,11 @@ fn draw_label(session: &OverlaySession, dc: HDC, selection: Rect, monitor: &Moni
     }
 }
 
-fn make_font(dpi: u32) -> HFONT {
+pub(super) fn ui_font(dpi: u32, size: i32) -> HFONT {
     let face = crate::win_util::wide("Microsoft YaHei UI");
     unsafe {
         CreateFontW(
-            -toolbar::scale(12, dpi),
+            -toolbar::scale(size, dpi),
             0,
             0,
             0,

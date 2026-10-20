@@ -7,7 +7,17 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows::Win32::System::Ole::CF_DIB;
+use windows::Win32::System::Ole::{CF_DIB, CF_UNICODETEXT};
+
+fn open_clipboard(hwnd: HWND) -> Result<()> {
+    for _ in 0..5 {
+        if unsafe { OpenClipboard(Some(hwnd)) }.is_ok() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Err(anyhow!("无法打开剪贴板"))
+}
 
 /// Copies an RGB8 image as a 24-bit CF_DIB bitmap.
 pub fn copy_rgb(hwnd: HWND, rgb: &[u8], width: u32, height: u32) -> Result<()> {
@@ -57,22 +67,58 @@ pub fn copy_rgb(hwnd: HWND, rgb: &[u8], width: u32, height: u32) -> Result<()> {
         let _ = GlobalUnlock(memory);
     }
 
-    let mut opened = false;
-    for _ in 0..5 {
-        if unsafe { OpenClipboard(Some(hwnd)) }.is_ok() {
-            opened = true;
-            break;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    if !opened {
+    if let Err(err) = open_clipboard(hwnd) {
         let _ = unsafe { GlobalFree(Some(memory)) };
-        return Err(anyhow!("无法打开剪贴板"));
+        return Err(err);
     }
 
     let result = (|| -> Result<()> {
-        unsafe { EmptyClipboard() }.map_err(|err| anyhow!("清空剪贴板失败：{err}"))?;
+        if let Err(err) = unsafe { EmptyClipboard() } {
+            let _ = unsafe { GlobalFree(Some(memory)) };
+            return Err(anyhow!("清空剪贴板失败：{err}"));
+        }
         match unsafe { SetClipboardData(CF_DIB.0 as u32, Some(HANDLE(memory.0))) } {
+            Ok(_) => Ok(()),
+            Err(err) => {
+                let _ = unsafe { GlobalFree(Some(memory)) };
+                Err(anyhow!("写入剪贴板失败：{err}"))
+            }
+        }
+    })();
+
+    let _ = unsafe { CloseClipboard() };
+    result
+}
+
+/// Copies plain text as CF_UNICODETEXT.
+pub fn copy_text(hwnd: HWND, text: &str) -> Result<()> {
+    let mut units: Vec<u16> = text.encode_utf16().collect();
+    units.push(0);
+    let bytes = units.len() * std::mem::size_of::<u16>();
+
+    let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, bytes) }
+        .map_err(|err| anyhow!("GlobalAlloc 失败：{err}"))?;
+    let pointer = unsafe { GlobalLock(memory) };
+    if pointer.is_null() {
+        let _ = unsafe { GlobalFree(Some(memory)) };
+        return Err(anyhow!("GlobalLock 失败"));
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(units.as_ptr() as *const u8, pointer as *mut u8, bytes);
+        let _ = GlobalUnlock(memory);
+    }
+
+    if let Err(err) = open_clipboard(hwnd) {
+        let _ = unsafe { GlobalFree(Some(memory)) };
+        return Err(err);
+    }
+
+    let result = (|| -> Result<()> {
+        if let Err(err) = unsafe { EmptyClipboard() } {
+            let _ = unsafe { GlobalFree(Some(memory)) };
+            return Err(anyhow!("清空剪贴板失败：{err}"));
+        }
+        match unsafe { SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(memory.0))) } {
             Ok(_) => Ok(()),
             Err(err) => {
                 let _ = unsafe { GlobalFree(Some(memory)) };

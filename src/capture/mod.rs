@@ -91,6 +91,24 @@ impl Frame {
         }
     }
 
+    /// Reads the RGB color of one virtual-desktop pixel from the frozen frame.
+    ///
+    /// Coordinates are global physical pixels, matching `origin`; pixels in the
+    /// empty gaps between monitors are part of the frame and read as black.
+    pub fn pixel_at(&self, point: Point) -> Option<[u8; 3]> {
+        if point.x < self.origin.x || point.y < self.origin.y {
+            return None;
+        }
+        let x = (point.x - self.origin.x) as usize;
+        let y = (point.y - self.origin.y) as usize;
+        if x >= self.width as usize || y >= self.height as usize {
+            return None;
+        }
+        let index = (y * self.width as usize + x) * 4;
+        let pixel = self.bgra.get(index..index + 4)?;
+        Some([pixel[2], pixel[1], pixel[0]])
+    }
+
     pub fn crop_bgra(&self, rect: Rect) -> Option<CapturedImage> {
         let rect = rect.intersection(self.bounds());
         if rect.is_empty() {
@@ -233,4 +251,42 @@ pub fn capture_virtual(
         return Err(anyhow!("所有显示器截图均失败"));
     }
     Ok(frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame() -> Frame {
+        let mut frame = Frame::new(Rect::new(-100, -50, -96, -47));
+        assert_eq!(frame.width, 4);
+        assert_eq!(frame.height, 3);
+        for y in 0..frame.height as usize {
+            for x in 0..frame.width as usize {
+                let index = (y * frame.width as usize + x) * 4;
+                frame.bgra[index] = 10 + x as u8; // B
+                frame.bgra[index + 1] = 20 + x as u8; // G
+                frame.bgra[index + 2] = 30 + x as u8; // R
+                frame.bgra[index + 3] = 255;
+            }
+        }
+        frame
+    }
+
+    #[test]
+    fn pixel_at_uses_global_coordinates() {
+        let frame = frame();
+        assert_eq!(frame.pixel_at(Point::new(-100, -50)), Some([30, 20, 10]));
+        assert_eq!(frame.pixel_at(Point::new(-97, -48)), Some([33, 23, 13]));
+        assert_eq!(frame.pixel_at(Point::new(-97, -47)), None);
+        assert_eq!(frame.pixel_at(Point::new(-96, -50)), None);
+        assert_eq!(frame.pixel_at(Point::new(-101, -50)), None);
+        assert_eq!(frame.pixel_at(Point::new(-100, -51)), None);
+    }
+
+    #[test]
+    fn pixel_at_handles_empty_frame() {
+        let frame = Frame::new(Rect::default());
+        assert_eq!(frame.pixel_at(Point::new(0, 0)), None);
+    }
 }

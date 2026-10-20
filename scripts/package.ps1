@@ -13,7 +13,7 @@
 # 本地用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 # CI 用法：
-#   .\scripts\package.ps1 -Version 0.1.0 -SkipBuild
+#   .\scripts\package.ps1 -Version 0.1.1 -SkipBuild
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot

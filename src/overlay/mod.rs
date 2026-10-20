@@ -1,3 +1,4 @@
+pub mod color;
 pub mod edit;
 pub mod keyboard;
 pub mod snap;
@@ -6,6 +7,7 @@ pub mod window;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
@@ -13,9 +15,11 @@ use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, SetFocus, VK_C, VK_ESCAPE, VK_RETURN, VK_SPACE,
+    ReleaseCapture, SetCapture, SetFocus, VK_C, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE,
 };
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SetForegroundWindow, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::{
+    PostMessageW, SetForegroundWindow, SetTimer, WM_APP,
+};
 
 use crate::capture::clipboard;
 use crate::geometry::{Point, Rect};
@@ -24,10 +28,18 @@ use crate::monitor::{self, MonitorInfo};
 use crate::naming;
 use crate::win_util::{self, WindowInfo};
 
+use self::color::ColorFormat;
 use self::window::{DimSurface, FrameSurface, OverlayWindow};
 
 pub const WM_APP_OVERLAY_CLOSE: u32 = WM_APP + 0x20;
 pub use keyboard::WM_APP_OVERLAY_KEY;
+
+pub const KEY_MOD_CTRL: u32 = 1;
+pub const KEY_MOD_ALT: u32 = 2;
+pub const KEY_MOD_WIN: u32 = 4;
+
+const NOTICE_DURATION: Duration = Duration::from_millis(1200);
+const COLOR_TIMER_INTERVAL_MS: u32 = 30;
 
 #[derive(Clone, Debug)]
 pub struct OverlayOptions {
@@ -103,6 +115,12 @@ pub struct OverlaySession {
     pub toolbar_rect: Option<Rect>,
     pub toolbar_dpi: u32,
     pub toolbar_hover: Option<usize>,
+    pub color_format: ColorFormat,
+    pub pointer: Option<Point>,
+    pub pointer_on_monitor: bool,
+    pub shift_down: bool,
+    pub shift_armed: bool,
+    pub copy_notice: Option<(String, Instant)>,
     pub close_requested: bool,
     pub hook: Option<keyboard::KeyboardHook>,
 }
@@ -149,6 +167,11 @@ pub fn start(
     let frame_surface = FrameSurface::new(&frame)?;
     let dim_surface = DimSurface::new()?;
     let hinstance = HINSTANCE(unsafe { GetModuleHandleW(None)?.0 });
+    let pointer = win_util::get_cursor_pos();
+    let pointer_on_monitor = pointer
+        .map(|point| monitors.iter().any(|monitor| monitor.rect.contains(point)))
+        .unwrap_or(false);
+    let shift_down = win_util::key_down(VK_SHIFT.0 as u32);
 
     let session = OverlaySession {
         main_hwnd,
@@ -173,6 +196,12 @@ pub fn start(
         toolbar_rect: None,
         toolbar_dpi: 96,
         toolbar_hover: None,
+        color_format: ColorFormat::Rgb,
+        pointer,
+        pointer_on_monitor,
+        shift_down,
+        shift_armed: !shift_down,
+        copy_notice: None,
         close_requested: false,
         hook: None,
     };
@@ -209,6 +238,18 @@ pub fn start(
                     .and_then(|session| session.overlays.first().map(|overlay| overlay.hwnd))
             })
             .ok_or_else(|| anyhow!("创建遮罩窗口失败"))?;
+
+        let timer = unsafe {
+            SetTimer(
+                Some(fallback_hwnd),
+                window::TIMER_COLOR_PICK,
+                COLOR_TIMER_INTERVAL_MS,
+                None,
+            )
+        };
+        if timer == 0 {
+            logging::warn("color picker timer could not be created; falling back to mouse events");
+        }
 
         let cursor = win_util::get_cursor_pos().unwrap_or(Point::new(0, 0));
         let target = SESSION
@@ -268,7 +309,7 @@ pub fn finish() {
     window::set_cursor(CursorKind::Arrow);
 }
 
-pub fn handle_key(vk: u32, ctrl: bool) {
+pub fn handle_key(vk: u32, modifiers: u32) {
     with_session_mut(|session| {
         if session.close_requested {
             return;
@@ -279,8 +320,17 @@ pub fn handle_key(vk: u32, ctrl: bool) {
             if session.phase == Phase::Locked {
                 session.save_or_copy(false);
             }
-        } else if vk == VK_C.0 as u32 && ctrl && session.phase == Phase::Locked {
-            session.save_or_copy(true);
+        } else if vk == VK_C.0 as u32 {
+            if modifiers & (KEY_MOD_ALT | KEY_MOD_WIN) != 0 {
+                return;
+            }
+            if modifiers & KEY_MOD_CTRL != 0 {
+                if session.phase == Phase::Locked {
+                    session.save_or_copy(true);
+                }
+            } else {
+                session.copy_color();
+            }
         }
     });
 }
@@ -305,6 +355,110 @@ impl OverlaySession {
             .monitor_for_rect(rect)
             .map(|monitor| toolbar::layout(rect, monitor, dpi));
         self.toolbar_hover = None;
+    }
+
+    fn refresh_pointer(&mut self) -> bool {
+        let point = win_util::get_cursor_pos();
+        let on_monitor = point
+            .map(|point| {
+                self.monitors
+                    .iter()
+                    .any(|monitor| monitor.rect.contains(point))
+            })
+            .unwrap_or(false);
+        let changed = point != self.pointer || on_monitor != self.pointer_on_monitor;
+        self.pointer = point;
+        self.pointer_on_monitor = on_monitor;
+        changed
+    }
+
+    /// `Shift` is a latch: the first press switches RGB to HEX, the next press
+    /// switches back. The key-down that opened the overlay (Shift+F1) is
+    /// ignored until Shift is released once.
+    fn update_format_from_shift(&mut self) -> bool {
+        let down = win_util::key_down(VK_SHIFT.0 as u32);
+        let mut changed = false;
+        if !down {
+            self.shift_armed = true;
+        }
+        if down != self.shift_down {
+            if down && self.shift_armed {
+                self.color_format = self.color_format.toggle();
+                changed = true;
+            }
+            self.shift_down = down;
+        }
+        changed
+    }
+
+    fn clear_expired_notice(&mut self) -> bool {
+        if let Some((_, until)) = &self.copy_notice {
+            if Instant::now() >= *until {
+                self.copy_notice = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn on_tick(&mut self) {
+        if self.close_requested {
+            return;
+        }
+        let mut changed = self.refresh_pointer();
+        changed |= self.update_format_from_shift();
+        changed |= self.clear_expired_notice();
+        if changed {
+            self.invalidate_all();
+        }
+    }
+
+    pub fn sample_color(&self, point: Point) -> Option<[u8; 3]> {
+        if !self
+            .monitors
+            .iter()
+            .any(|monitor| monitor.rect.contains(point))
+        {
+            return None;
+        }
+        self.frame.pixel_at(point)
+    }
+
+    fn color_at_pointer(&self) -> Option<(Point, [u8; 3])> {
+        let point = self.pointer?;
+        let rgb = self.sample_color(point)?;
+        Some((point, rgb))
+    }
+
+    fn show_notice(&mut self, text: &str) {
+        self.copy_notice = Some((text.to_string(), Instant::now() + NOTICE_DURATION));
+        self.invalidate_all();
+    }
+
+    fn copy_color(&mut self) {
+        // Make Shift+C and fast pointer movement work even if the 30 ms timer
+        // has not observed them yet.
+        let _ = self.refresh_pointer();
+        self.update_format_from_shift();
+        let Some((point, rgb)) = self.color_at_pointer() else {
+            self.show_notice("无有效像素");
+            logging::warn("color picker: no pixel under cursor");
+            return;
+        };
+        let text = self.color_format.copy_value(rgb);
+        match clipboard::copy_text(self.main_hwnd, &text) {
+            Ok(()) => {
+                logging::info(&format!(
+                    "color copied at ({}, {}): {}",
+                    point.x, point.y, text
+                ));
+                self.show_notice("已复制");
+            }
+            Err(err) => {
+                logging::warn(&format!("copy color to clipboard failed: {err:#}"));
+                self.show_notice("复制失败");
+            }
+        }
     }
 
     fn hit_selection(&self, point: Point) -> Option<edit::Hit> {
@@ -364,7 +518,13 @@ impl OverlaySession {
         if self.close_requested {
             return;
         }
-        let Some(point) = win_util::get_cursor_pos() else {
+        let mut ui_changed = self.refresh_pointer();
+        ui_changed |= self.update_format_from_shift();
+        ui_changed |= self.clear_expired_notice();
+        if ui_changed {
+            self.invalidate_all();
+        }
+        let Some(point) = self.pointer else {
             return;
         };
 
@@ -443,7 +603,13 @@ impl OverlaySession {
         if self.close_requested {
             return;
         }
-        let Some(point) = win_util::get_cursor_pos() else {
+        let mut ui_changed = self.refresh_pointer();
+        ui_changed |= self.update_format_from_shift();
+        ui_changed |= self.clear_expired_notice();
+        if ui_changed {
+            self.invalidate_all();
+        }
+        let Some(point) = self.pointer else {
             return;
         };
 
@@ -579,6 +745,13 @@ impl OverlaySession {
             self.request_close();
             return;
         };
+        logging::info(&format!(
+            "selection {}x{} at ({}, {})",
+            selection.width(),
+            selection.height(),
+            selection.left,
+            selection.top
+        ));
         let Some((rgb, width, height)) = self.frame.crop_rgb(selection) else {
             self.notify_error("截图范围为空");
             self.request_close();
