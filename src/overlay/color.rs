@@ -14,7 +14,9 @@ use super::toolbar;
 
 pub const MAGNIFIER_CELLS: i32 = 9;
 const MAGNIFIER_RADIUS: i32 = MAGNIFIER_CELLS / 2;
-const INFO_WIDTH: i32 = 210;
+// At 96 DPI the widest line is "Shift 切换    C 复制" (105px) and
+// "RGB  255, 0, 255" (96px). 112px keeps both on one line with a margin.
+const INFO_WIDTH: i32 = 112;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorFormat {
@@ -60,7 +62,7 @@ fn hex_value(rgb: [u8; 3]) -> String {
 }
 
 pub fn coordinates_text(point: Point) -> String {
-    format!("X: {}    Y: {}", point.x, point.y)
+    format!("X {}  Y {}", point.x, point.y)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -298,7 +300,7 @@ fn draw_info(dc: HDC, layout: &Layout, ctx: &DrawContext<'_>, rgb: [u8; 3]) {
 
     let (hint, hint_color) = match ctx.notice {
         Some(notice) => (notice, color(96, 224, 138)),
-        None => ("Shift 切换格式    C 复制", color(166, 172, 184)),
+        None => ("Shift 切换    C 复制", color(166, 172, 184)),
     };
     draw_text(
         dc,
@@ -438,10 +440,7 @@ mod tests {
 
     #[test]
     fn coordinates_use_global_physical_pixels() {
-        assert_eq!(
-            coordinates_text(Point::new(1234, -567)),
-            "X: 1234    Y: -567"
-        );
+        assert_eq!(coordinates_text(Point::new(1234, -567)), "X 1234  Y -567");
     }
 
     #[test]
@@ -452,6 +451,7 @@ mod tests {
         assert_eq!(layout.cell, 10);
         assert_eq!(layout.panel.left, 218);
         assert_eq!(layout.panel.top, 218);
+        assert_eq!(layout.panel.width(), 226);
         assert!(layout.panel.right <= monitor.rect.right);
         assert!(layout.panel.bottom <= monitor.rect.bottom);
         assert_eq!(layout.magnifier.width(), layout.cell * MAGNIFIER_CELLS);
