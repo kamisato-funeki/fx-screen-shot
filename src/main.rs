@@ -141,7 +141,7 @@ fn show_error(message: &str) {
 fn show_help() {
     let text = "ScreenShot FX\n\n\
         Shift+F1：选区截图（悬停吸附窗口，拖拽选区，锁定后可拖动调整）\n\
-        Shift 切换 RGB/HEX，C 复制色值，Ctrl+C 复制选区，Enter 保存\n\
+        Shift 切换 RGB/HEX，C 复制色值，方向键 1px 微调，Ctrl+C 复制选区，Enter 保存\n\
         Shift+F2：快速截图（鼠标所在显示器，静默保存）\n\n\
         命令行：\n\
         --capture-once [png] [--backend auto|gdi|wgc]\n\

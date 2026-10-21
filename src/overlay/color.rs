@@ -12,7 +12,7 @@ use crate::monitor::MonitorInfo;
 
 use super::toolbar;
 
-pub const MAGNIFIER_CELLS: i32 = 5;
+pub const MAGNIFIER_CELLS: i32 = 9;
 const MAGNIFIER_RADIUS: i32 = MAGNIFIER_CELLS / 2;
 const INFO_WIDTH: i32 = 210;
 
@@ -79,7 +79,7 @@ pub fn layout(pointer: Point, monitor: &MonitorInfo) -> Layout {
     let dpi = monitor.dpi;
     let pad = toolbar::scale(8, dpi);
     let gap = toolbar::scale(8, dpi);
-    let cell = toolbar::scale(12, dpi).max(6);
+    let cell = toolbar::scale(10, dpi).max(6);
     let grid = cell * MAGNIFIER_CELLS;
     let info_width = toolbar::scale(INFO_WIDTH, dpi);
     let panel_width = pad * 2 + grid + gap + info_width;
@@ -448,6 +448,8 @@ mod tests {
     fn layout_is_placed_next_to_pointer_and_inside_monitor() {
         let monitor = monitor(0, 0, 2560, 1600, 96);
         let layout = layout(Point::new(200, 200), &monitor);
+        assert_eq!(MAGNIFIER_CELLS, 9);
+        assert_eq!(layout.cell, 10);
         assert_eq!(layout.panel.left, 218);
         assert_eq!(layout.panel.top, 218);
         assert!(layout.panel.right <= monitor.rect.right);

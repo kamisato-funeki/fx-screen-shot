@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use anyhow::Result;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_C, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SPACE,
+    VK_C, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_LWIN, VK_MENU, VK_RETURN, VK_RIGHT, VK_RWIN,
+    VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, PostMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, HHOOK,
@@ -68,9 +69,14 @@ unsafe extern "system" fn hook_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) 
         if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
             let modifiers = current_modifiers();
             let is_c = vk == VK_C.0 as u32;
+            let is_arrow = vk == VK_LEFT.0 as u32
+                || vk == VK_RIGHT.0 as u32
+                || vk == VK_UP.0 as u32
+                || vk == VK_DOWN.0 as u32;
             // Plain C copies the color under the cursor; Ctrl+C copies the
-            // selected image. Alt/Win combinations stay with the system.
-            let handled = if is_c {
+            // selected image. Arrow keys nudge the cursor by one pixel.
+            // Alt/Win combinations stay with the system.
+            let handled = if is_c || is_arrow {
                 modifiers & (KEY_MOD_ALT | KEY_MOD_WIN) == 0
             } else {
                 vk == VK_ESCAPE.0 as u32 || vk == VK_RETURN.0 as u32 || vk == VK_SPACE.0 as u32

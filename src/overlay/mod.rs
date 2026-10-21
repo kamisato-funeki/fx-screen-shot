@@ -15,10 +15,11 @@ use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::Graphics::Gdi::InvalidateRect;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, SetFocus, VK_C, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE,
+    ReleaseCapture, SetCapture, SetFocus, VK_C, VK_DOWN, VK_ESCAPE, VK_LBUTTON, VK_LEFT, VK_RETURN,
+    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    PostMessageW, SetForegroundWindow, SetTimer, WM_APP,
+    PostMessageW, SetCursorPos, SetForegroundWindow, SetTimer, WM_APP,
 };
 
 use crate::capture::clipboard;
@@ -309,6 +310,29 @@ pub fn finish() {
     window::set_cursor(CursorKind::Arrow);
 }
 
+fn arrow_delta(vk: u32) -> Option<(i32, i32)> {
+    if vk == VK_LEFT.0 as u32 {
+        Some((-1, 0))
+    } else if vk == VK_RIGHT.0 as u32 {
+        Some((1, 0))
+    } else if vk == VK_UP.0 as u32 {
+        Some((0, -1))
+    } else if vk == VK_DOWN.0 as u32 {
+        Some((0, 1))
+    } else {
+        None
+    }
+}
+
+fn nudge_target(point: Point, dx: i32, dy: i32, bounds: Rect) -> Point {
+    let max_x = bounds.right.saturating_sub(1).max(bounds.left);
+    let max_y = bounds.bottom.saturating_sub(1).max(bounds.top);
+    Point::new(
+        point.x.saturating_add(dx).clamp(bounds.left, max_x),
+        point.y.saturating_add(dy).clamp(bounds.top, max_y),
+    )
+}
+
 pub fn handle_key(vk: u32, modifiers: u32) {
     with_session_mut(|session| {
         if session.close_requested {
@@ -331,6 +355,11 @@ pub fn handle_key(vk: u32, modifiers: u32) {
             } else {
                 session.copy_color();
             }
+        } else if let Some((dx, dy)) = arrow_delta(vk) {
+            if modifiers & (KEY_MOD_ALT | KEY_MOD_WIN) != 0 {
+                return;
+            }
+            session.nudge_cursor(dx, dy);
         }
     });
 }
@@ -411,6 +440,39 @@ impl OverlaySession {
         if changed {
             self.invalidate_all();
         }
+    }
+
+    fn can_nudge_cursor(&self) -> bool {
+        if self.close_requested
+            || self.pressed
+            || self.dragging
+            || self.phase == Phase::Dragging
+            || self.selection_drag.is_some()
+        {
+            return false;
+        }
+        // Defensive: the overlay can open while the left button is already
+        // held, before it has seen WM_LBUTTONDOWN.
+        !win_util::key_down(VK_LBUTTON.0 as u32)
+    }
+
+    /// Moves the real cursor by one pixel, then runs the normal mouse-move
+    /// path so hover, selection, toolbar and color sampling all stay in sync.
+    pub fn nudge_cursor(&mut self, dx: i32, dy: i32) {
+        if !self.can_nudge_cursor() {
+            return;
+        }
+        let Some(point) = win_util::get_cursor_pos() else {
+            return;
+        };
+        let target = nudge_target(point, dx, dy, self.virtual_rect);
+        if target == point {
+            return;
+        }
+        if unsafe { SetCursorPos(target.x, target.y) }.is_err() {
+            return;
+        }
+        self.on_mouse_move();
     }
 
     pub fn sample_color(&self, point: Point) -> Option<[u8; 3]> {
@@ -814,6 +876,49 @@ pub fn flush_after_close() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrow_keys_map_to_one_pixel_steps() {
+        assert_eq!(arrow_delta(VK_LEFT.0 as u32), Some((-1, 0)));
+        assert_eq!(arrow_delta(VK_RIGHT.0 as u32), Some((1, 0)));
+        assert_eq!(arrow_delta(VK_UP.0 as u32), Some((0, -1)));
+        assert_eq!(arrow_delta(VK_DOWN.0 as u32), Some((0, 1)));
+        assert_eq!(arrow_delta(VK_C.0 as u32), None);
+    }
+
+    #[test]
+    fn nudge_target_clamps_to_virtual_desktop() {
+        let bounds = Rect::new(-100, -50, 100, 50);
+        assert_eq!(
+            nudge_target(Point::new(0, 0), 1, 0, bounds),
+            Point::new(1, 0)
+        );
+        assert_eq!(
+            nudge_target(Point::new(0, 0), 0, 1, bounds),
+            Point::new(0, 1)
+        );
+        assert_eq!(
+            nudge_target(Point::new(99, 49), 1, 1, bounds),
+            Point::new(99, 49)
+        );
+        assert_eq!(
+            nudge_target(Point::new(-100, -50), -1, -1, bounds),
+            Point::new(-100, -50)
+        );
+    }
+
+    #[test]
+    fn nudge_target_can_cross_monitor_gap() {
+        let bounds = Rect::new(0, 0, 4000, 1000);
+        assert_eq!(
+            nudge_target(Point::new(1919, 500), 1, 0, bounds),
+            Point::new(1920, 500)
+        );
+        assert_eq!(
+            nudge_target(Point::new(1920, 500), 1, 0, bounds),
+            Point::new(1921, 500)
+        );
+    }
 
     #[test]
     fn cursor_mapping_covers_all_handles() {
