@@ -10,7 +10,7 @@ select_hotkey = "Shift+F1"
 quick_hotkey = "Shift+F2"
 
 # 截图后端：
-#   auto = 普通屏幕用 GDI（静默），HDR 屏幕自动用 WGC
+#   auto = SDR/广色域(WCG/ACM) 用 GDI（静默），仅 HDR 用 WGC
 #   gdi  = 始终使用 GDI
 #   wgc  = 兼容模式，始终使用 WGC（屏幕边缘可能出现黄色指示框）
 backend = "auto"

@@ -50,7 +50,8 @@ pub fn capture(monitor: &MonitorInfo, hdr_exposure: f32) -> Result<CapturedImage
     };
     let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(monitor.hmon)? };
 
-    let preferred = if monitor.hdr {
+    let needs_tone_map = monitor.color_mode.needs_tone_map();
+    let preferred = if needs_tone_map {
         DirectXPixelFormat::R16G16B16A16Float
     } else {
         DirectXPixelFormat::B8G8R8A8UIntNormalized
@@ -65,7 +66,7 @@ pub fn capture(monitor: &MonitorInfo, hdr_exposure: f32) -> Result<CapturedImage
         hdr_exposure,
     ) {
         Ok(image) => Ok(image),
-        Err(first) if monitor.hdr => {
+        Err(first) if needs_tone_map => {
             logging::warn(&format!(
                 "WGC FP16 capture failed on {}, retrying BGRA8: {first:#}",
                 monitor.device_name
@@ -122,6 +123,16 @@ fn capture_with_format(
         Width: width as i32,
         Height: height as i32,
     };
+    logging::info(&format!(
+        "wgc {} format={} mode={}",
+        monitor.device_name,
+        if format == DirectXPixelFormat::R16G16B16A16Float {
+            "fp16"
+        } else {
+            "bgra8"
+        },
+        monitor.color_mode.as_str()
+    ));
 
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(direct_device, format, 2, size)?;
     let session = pool.CreateCaptureSession(item)?;

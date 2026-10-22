@@ -33,6 +33,7 @@ fn main() {
 
     let mut capture_once: Option<Option<PathBuf>> = None;
     let mut backend_override = None;
+    let mut monitor_selector: Option<String> = None;
     let mut set_autostart = None;
     let mut no_autostart = false;
 
@@ -60,6 +61,16 @@ fn main() {
                         finish(com_initialized, 2);
                     }
                 }
+                index += 1;
+            }
+            "--monitor" => {
+                if index + 1 >= args.len() || args[index + 1].starts_with("--") {
+                    show_error(
+                        "--monitor 需要一个参数：显示器序号（从 1 开始）或设备名，例如 \\\\.\\DISPLAY1",
+                    );
+                    finish(com_initialized, 2);
+                }
+                monitor_selector = Some(args[index + 1].clone());
                 index += 1;
             }
             "--set-autostart" => {
@@ -90,7 +101,7 @@ fn main() {
     }
 
     let code = if let Some(path) = capture_once {
-        match diagnostics::capture_once(path, backend_override) {
+        match diagnostics::capture_once(path, backend_override, monitor_selector) {
             Ok(saved) => {
                 logging::info(&format!("capture-once finished: {}", saved.display()));
                 0
@@ -144,7 +155,8 @@ fn show_help() {
         Shift 切换 RGB/HEX，C 复制色值，方向键 1px 微调，Ctrl+C 复制选区，Enter 保存\n\
         Shift+F2：快速截图（鼠标所在显示器，静默保存）\n\n\
         命令行：\n\
-        --capture-once [png] [--backend auto|gdi|wgc]\n\
+        --capture-once [png] [--backend auto|gdi|wgc] [--monitor <序号|设备名>]\n\
+        --monitor 仅配合 --capture-once：序号从 1 开始，或设备名如 \\\\.\\DISPLAY1\n\
         --set-autostart on|off\n\
         --no-autostart\n\n\
         配置：%APPDATA%\\ScreenShotFX\\config.toml\n\

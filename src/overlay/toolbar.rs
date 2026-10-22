@@ -230,7 +230,7 @@ mod tests {
             device_name: "DISPLAY".to_string(),
             rect: Rect::new(0, 0, 1920, 1080),
             dpi: 96,
-            hdr: false,
+            color_mode: crate::capture::hdr::ColorMode::Sdr,
         }
     }
 

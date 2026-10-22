@@ -36,7 +36,7 @@ impl Backend {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Backend::Auto => "自动（HDR 用 WGC）",
+            Backend::Auto => "自动（仅 HDR 用 WGC）",
             Backend::Gdi => "GDI（静默）",
             Backend::Wgc => "WGC（兼容模式，有黄框）",
         }
@@ -224,7 +224,7 @@ select_hotkey = "{select_hotkey}"
 quick_hotkey = "{quick_hotkey}"
 
 # 截图后端：
-#   auto = 普通屏幕用 GDI（静默），HDR 屏幕自动用 WGC
+#   auto = SDR/广色域(WCG/ACM) 用 GDI（静默），仅 HDR 用 WGC
 #   gdi  = 始终使用 GDI
 #   wgc  = 兼容模式，始终使用 WGC（屏幕边缘可能出现黄色指示框）
 backend = "{backend}"

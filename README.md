@@ -41,7 +41,7 @@ ScreenShot FX 是一个用 Rust 和原生 Win32 编写的轻量截图工具。�
 | 不注入游戏 | 不向游戏进程加载 DLL、不 Hook DirectX/图形管线、不读写游戏内存 |
 | 本地处理 | 不联网、不上传截图、不收集遥测 |
 | 支持多屏 | 每次按快捷键时重新枚举显示器，按鼠标位置选屏 |
-| 自动处理 HDR | HDR 显示器自动切到 WGC 后端并做色调映射 |
+| 自动处理 HDR | 区分 HDR 与广色域/ACM：仅真 HDR 切 WGC 并做色调映射，WCG/SDR 走 GDI 保持原色 |
 
 > 截图不包含鼠标指针。`Shift+F2` 截取的是**整块显示器**；如果游戏运行在窗口中，窗口外的桌面也会进入图片。只想截游戏窗口时，请使用 `Shift+F1` 单击窗口。
 
@@ -60,7 +60,7 @@ ScreenShot FX 是一个用 Rust 和原生 Win32 编写的轻量截图工具。�
 
 - **显示模式**：优先使用“无边框全屏 / 窗口化全屏”。这种模式在 Windows 11 上合成方式最稳定，GDI 和 WGC 后端都容易成功。
 - **独占全屏**：部分游戏的独占全屏会让 GDI 截到黑屏。可以在托盘菜单勾选“兼容模式（WGC，有黄框）”后重试；仍失败时改用无边框全屏。
-- **HDR 游戏**：保持 `backend = "auto"` 即可。程序检测到 HDR 显示器会自动使用 WGC，并在截图时做 SDR 色调映射；如果颜色偏亮/偏暗，调整 `hdr_exposure`（0.25–4.0）后重新加载配置。
+- **HDR 游戏**：保持 `backend = "auto"` 即可。程序检测到**真 HDR**（`activeColorMode = HDR`）会自动使用 WGC，并在截图时做 SDR 色调映射；如果颜色偏亮/偏暗，调整 `hdr_exposure`（0.25–4.0）后重新加载配置。只开了“自动管理应用的颜色（ACM/WCG）”的 SDR 屏仍走 GDI，不会被提亮。
 - **多显示器**：先把鼠标移到游戏所在屏幕，再按 `Shift+F2`。程序选择鼠标指针所在的显示器；鼠标落在屏幕之间的空隙时，选最近的一块。
 - **4K / 高刷**：截图和 PNG 编码在消息线程中同步完成，耗时与分辨率有关，通常为几十到几百毫秒。它不会暂停游戏，但极短暂的帧时间波动仍有可能出现。
 - **快捷键冲突**：如果 `Shift+F2` 被游戏或其他软件占用，日志会记录注册失败并弹出一次提示。把 `quick_hotkey` 改成 `Ctrl+Shift+F2` 等组合，然后在托盘菜单选择“重新加载配置”。
@@ -103,7 +103,7 @@ INFO  quick screenshot saved C:\Users\<你>\Pictures\fx\Screenshot_2026-10-19_20
 - **剪贴板**：默认保存的同时复制到剪贴板；工具条的“复制”按钮可只复制不保存。
 - **开机自启**：首次运行自动写入当前用户的开机启动项，托盘菜单随时开关。
 - **多显示器 / 混合 DPI**：所有坐标按物理像素处理，支持负坐标、不同缩放比例和上下排列。
-- **HDR 支持**：自动检测高级颜色（HDR/WCG）显示器，使用 Windows Graphics Capture 捕获并色调映射。
+- **HDR / 广色域**：区分真 HDR 与广色域（ACM/WCG）SDR；仅 HDR 使用 Windows Graphics Capture + 色调映射，WCG/SDR 用 GDI 保持原色。
 - **兼容模式**：遇到全屏游戏、录屏软件冲突或 GDI 黑屏时，可强制使用 WGC。
 - **配置热加载**：修改 `config.toml` 后在托盘菜单选择“重新加载配置”，无需重启。
 - **本地隐私**：不联网、不收集信息、不上传截图；仅在选区截图期间临时安装键盘钩子。
@@ -355,7 +355,7 @@ autostart_initialized = false
 | `save_dir` | `%USERPROFILE%\Pictures\fx` | 截图保存目录；支持 `%USERPROFILE%` 等环境变量，不存在会自动创建 |
 | `select_hotkey` | `Shift+F1` | 选区截图快捷键 |
 | `quick_hotkey` | `Shift+F2` | 快速截图快捷键；游戏内静默截图用的就是它 |
-| `backend` | `auto` | `auto`：普通屏 GDI、HDR 屏 WGC；`gdi`：始终 GDI；`wgc`：兼容模式，始终 WGC |
+| `backend` | `auto` | `auto`：SDR/广色域(WCG/ACM) 屏 GDI、真 HDR 屏 WGC；`gdi`：始终 GDI；`wgc`：兼容模式，始终 WGC |
 | `clipboard` | `true` | 保存后是否同时复制；工具条的“复制”按钮不受此开关影响 |
 | `snap_distance` | `10` | 吸附距离，96 DPI 基准像素，实际按显示器 DPI 缩放，范围 0–50 |
 | `hdr_exposure` | `1.0` | WGC HDR 色调映射曝光，范围 0.25–4.0 |
@@ -377,7 +377,7 @@ autostart_initialized = false
 
 ### 后端与兼容模式
 
-- `auto`（默认）：普通 SDR 显示器用 GDI，HDR 显示器自动用 WGC。
+- `auto`（默认）：SDR 与广色域（WCG/ACM）显示器用 GDI，只有真 HDR 显示器自动用 WGC。
 - `gdi`：始终使用 GDI。静默、无捕获边框，适合大多数桌面与无边框游戏；不支持部分独占全屏和 DRM 内容。
 - `wgc`：始终使用 Windows Graphics Capture，也就是托盘菜单里的“兼容模式”。对全屏游戏、录屏软件更友好，但 Windows 会在被截显示器边缘显示黄色捕获边框。
 
@@ -390,7 +390,7 @@ autostart_initialized = false
 ```text
 fxshot.exe
 fxshot.exe --help
-fxshot.exe --capture-once [output.png] [--backend auto|gdi|wgc]
+fxshot.exe --capture-once [output.png] [--backend auto|gdi|wgc] [--monitor <序号|设备名>]
 fxshot.exe --set-autostart on|off
 fxshot.exe --no-autostart
 ```
@@ -398,7 +398,8 @@ fxshot.exe --no-autostart
 | 参数 | 说明 |
 |---|---|
 | 无参数 | 以托盘常驻模式启动 |
-| `--capture-once [output.png] [--backend ...]` | 截取包含桌面原点的显示器（通常是主屏）后退出；不创建托盘、不占用单实例、不写自启。未指定路径时写入 `%TEMP%\fxshot-capture-<pid>.png`，适合自动化验证 |
+| `--capture-once [output.png] [--backend ...] [--monitor ...]` | 截取指定显示器（默认包含桌面原点的显示器，通常是主屏）后退出；不创建托盘、不占用单实例、不写自启。未指定路径时写入 `%TEMP%\fxshot-capture-<pid>.png`，适合自动化验证 |
+| `--monitor <序号\|设备名>` | 仅配合 `--capture-once`：序号从 1 开始（按枚举顺序），或设备名如 `\\.\DISPLAY1`（可省略 `\\.\` 前缀，不区分大小写） |
 | `--set-autostart on\|off` | 更新配置与注册表自启项后退出；安装/卸载脚本使用 |
 | `--no-autostart` | 开发运行，跳过首次自启写入与本次同步 |
 | `--help` / `-h` / `/?` | 弹出帮助窗口 |
@@ -408,6 +409,9 @@ fxshot.exe --no-autostart
 ```powershell
 # 用 GDI 截一张主屏，验证当前桌面
 .\fxshot.exe --capture-once .\check.png --backend gdi
+
+# 指定副屏（设备名以日志/系统为准），用于对比后端颜色
+.\fxshot.exe --capture-once .\k27.png --monitor "\\.\DISPLAY1"
 
 # 临时关闭开机自启
 .\fxshot.exe --set-autostart off
@@ -441,16 +445,18 @@ fxshot.exe --no-autostart
 
 ### Windows Graphics Capture（HDR / 兼容模式）
 
-- 用于 HDR 显示器自动模式和用户手动开启的兼容模式。
+- 用于真 HDR 显示器自动模式和用户手动开启的兼容模式。
 - Windows 会在被截显示器边缘显示黄色隐私边框；未打包的普通 Win32 应用无法可靠关闭它，因此默认只对 HDR 使用。
 - HDR 使用 FP16 捕获并色调映射为 8-bit sRGB PNG；PNG 本身不保留 HDR 高动态范围。
+- 广色域（WCG/ACM）SDR 屏在兼容模式下使用 8-bit BGRA8 捕获，不做色调映射。
 - 某些受保护内容、独占全屏游戏仍可能失败；失败时会回退 GDI 并写入日志。
 
-### HDR
+### HDR 与广色域（ACM/WCG）
 
-- 自动检测 Windows 高级颜色（HDR/WCG）是否开启。
-- `auto` 后端下，HDR 显示器自动使用 WGC，避免 GDI 截出灰暗/偏色画面。
-- 曝光不合适时调整 `hdr_exposure`，重新加载配置后再试。
+- Windows 的“高级颜色”有三种活动模式：`SDR`、`WCG`（“自动管理应用的颜色”/广色域，画面仍是 SDR）和 `HDR`。
+- 程序通过 `DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_2.activeColorMode` 区分，只有真 HDR 会走 WGC + FP16 色调映射；WCG/SDR 走 GDI，避免 SDR 中间调被提亮成“白纱”。
+- 24H2 以前无法区分 WCG 与 HDR；如果广色域屏截图发白，可临时设 `backend = "gdi"`。
+- 真 HDR 曝光不合适时调整 `hdr_exposure`（0.25–4.0），重新加载配置后再试。
 
 ### 受保护内容与独占全屏
 
@@ -486,10 +492,11 @@ Screenshot_2026-10-19_20-30-12_2.png   # 同一秒内第二张
 - 检查是否属于 DRM 保护内容或 UAC 安全桌面。
 - 查看日志中的 `backend ... failed` 与 `fallback` 记录。
 
-### 4. HDR 颜色不对，或者边缘有黄框
+### 4. HDR 颜色不对、广色域屏发白，或者边缘有黄框
 
 - 黄框是 Windows Graphics Capture 的隐私指示器，未打包 Win32 应用无法可靠关闭；只在 HDR 和兼容模式下出现。
-- 颜色偏亮/偏暗：调整 `hdr_exposure`（0.25–4.0），重新加载配置。
+- **未开 HDR 但屏幕发白、像蒙了一层白纱**：通常是 Windows 开了“自动管理应用的颜色（ACM/WCG）”，旧版把 WCG 当成 HDR 做了色调映射。0.1.3 起 `auto` 会把 WCG 屏按 SDR 处理（GDI）；强制 WGC 时使用 BGRA8、不做色调映射。确认配置为 `backend = "auto"` 后重新加载配置。
+- 真 HDR 颜色偏亮/偏暗：调整 `hdr_exposure`（0.25–4.0），重新加载配置。
 - HDR 截图输出为 SDR PNG，不保留 16-bit 高动态范围。
 
 ### 5. 剪贴板里没有图
@@ -544,7 +551,7 @@ Screenshot_2026-10-19_20-30-12_2.png   # 同一秒内第二张
 5. 按 `C` 复制当前格式的色值：RGB 为 `rgb(r, g, b)`，HEX 为 `#RRGGBB`。
 6. 完成选区后按 `Ctrl+C` 复制选区图片，按 `Enter` / `Space` 保存，按 `Esc` 取消。
 
-取色值是打开遮罩时的冻结画面，不会随视频或动画继续变化；HDR 屏取到的是色调映射后的 SDR 值。
+取色值是打开遮罩时的冻结画面，不会随视频或动画继续变化；HDR 屏取到的是色调映射后的 SDR 值，WCG/ACM 屏按原色读取。
 
 ---
 
@@ -569,7 +576,7 @@ Screenshot_2026-10-19_20-30-12_2.png   # 同一秒内第二张
 - WGC 在未打包 Win32 应用中无法可靠关闭黄色捕获边框；因此默认只对 HDR 使用。
 - 暂未针对 ARM64 构建。
 - 未签名 exe 在从网络下载后可能触发 SmartScreen；本地构建/安装不会带 Mark-of-the-Web。
-- 当前开发环境只有一块 2560×1600 @150% 显示器；双屏、HDR 和重启自启需要在实际外接显示器上做最终人工验收。
+- 已在双屏环境（4K HDMI + 2560×1600 @150%）验证 GDI 与广色域（WCG/ACM）SDR 处理；真 HDR 与重启自启仍需要在对应环境实测。
 
 ---
 
@@ -646,7 +653,7 @@ WGC 步骤可能短暂显示黄色捕获边框。该脚本需要**交互式桌�
 
 ### 代码结构提示
 
-- 截图后端在 `src/capture/`：GDI 负责静默路径，WGC 负责 HDR 和兼容模式，失败会自动回退并写日志。
+- 截图后端在 `src/capture/`：GDI 负责静默路径，WGC 负责 HDR 和兼容模式；`hdr.rs` 区分 SDR/WCG/HDR，失败会自动回退并写日志。
 - 选区 UI 在 `src/overlay/`：遮罩窗口、吸附、编辑手柄、工具条、取色面板（`color.rs`）和键盘钩子相互独立。
 - 所有坐标使用物理像素；涉及 DPI 的尺寸（如吸附距离、工具条、取色面板）在显示前按显示器 DPI 缩放。
 - 自动化测试需要并行运行实例时，可设置环境变量 `FXSHOT_MUTEX_NAME` 为实例指定独立的单例互斥体名；正常使用不要设置。

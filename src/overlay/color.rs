@@ -414,7 +414,7 @@ mod tests {
             device_name: "DISPLAY".to_string(),
             rect: Rect::new(left, top, right, bottom),
             dpi,
-            hdr: false,
+            color_mode: crate::capture::hdr::ColorMode::Sdr,
         }
     }
 

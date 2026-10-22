@@ -63,6 +63,7 @@ pub fn distance(a: Point, b: Point) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::hdr::ColorMode;
     use crate::win_util::WindowInfo;
 
     fn window(left: i32, top: i32, right: i32, bottom: i32) -> WindowInfo {
@@ -78,7 +79,7 @@ mod tests {
             device_name: "DISPLAY".to_string(),
             rect: Rect::new(left, top, right, bottom),
             dpi: 96,
-            hdr: false,
+            color_mode: ColorMode::Sdr,
         }
     }
 

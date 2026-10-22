@@ -10,6 +10,8 @@ use crate::geometry::{Point, Rect};
 use crate::logging;
 use crate::monitor::{self, MonitorInfo};
 
+use self::hdr::ColorMode;
+
 #[derive(Clone, Debug)]
 pub struct CapturedImage {
     pub width: u32,
@@ -144,15 +146,12 @@ impl Frame {
     }
 }
 
-pub fn preferred_backend(config_backend: Backend, monitor: &MonitorInfo) -> Backend {
+pub fn preferred_backend(config_backend: Backend, color_mode: ColorMode) -> Backend {
     match config_backend {
-        Backend::Auto => {
-            if monitor.hdr {
-                Backend::Wgc
-            } else {
-                Backend::Gdi
-            }
-        }
+        // Only true HDR needs the FP16 tone-mapping path. WCG/ACM still carries
+        // SDR (display-referred) content and stays on the silent GDI path.
+        Backend::Auto if color_mode.needs_tone_map() => Backend::Wgc,
+        Backend::Auto => Backend::Gdi,
         other => other,
     }
 }
@@ -166,7 +165,7 @@ pub fn capture_monitor(
         Backend::Gdi => gdi::capture(monitor),
         Backend::Wgc => wgc::capture(monitor, hdr_exposure),
         Backend::Auto => {
-            let actual = preferred_backend(Backend::Auto, monitor);
+            let actual = preferred_backend(Backend::Auto, monitor.color_mode);
             capture_monitor(monitor, actual, hdr_exposure)
         }
     }
@@ -178,7 +177,7 @@ pub fn capture_monitor_with_fallback(
     config_backend: Backend,
     hdr_exposure: f32,
 ) -> Result<(CapturedImage, Backend)> {
-    let preferred = preferred_backend(config_backend, monitor);
+    let preferred = preferred_backend(config_backend, monitor.color_mode);
     match capture_monitor(monitor, preferred, hdr_exposure) {
         Ok(image) => Ok((image, preferred)),
         Err(first_error) => {
@@ -231,9 +230,11 @@ pub fn capture_virtual(
         match capture_monitor_with_fallback(monitor, config_backend, hdr_exposure) {
             Ok((image, backend)) => {
                 logging::info(&format!(
-                    "captured {} ({}) with {}",
+                    "captured {} {}x{} mode={} with {}",
                     monitor.device_name,
                     monitor.rect.width(),
+                    monitor.rect.height(),
+                    monitor.color_mode.as_str(),
                     backend.as_str()
                 ));
                 frame.put_monitor_image(monitor, &image);
@@ -288,5 +289,33 @@ mod tests {
     fn pixel_at_handles_empty_frame() {
         let frame = Frame::new(Rect::default());
         assert_eq!(frame.pixel_at(Point::new(0, 0)), None);
+    }
+
+    #[test]
+    fn auto_backend_only_uses_wgc_for_hdr() {
+        assert_eq!(
+            preferred_backend(Backend::Auto, ColorMode::Sdr),
+            Backend::Gdi
+        );
+        assert_eq!(
+            preferred_backend(Backend::Auto, ColorMode::Wcg),
+            Backend::Gdi
+        );
+        assert_eq!(
+            preferred_backend(Backend::Auto, ColorMode::Hdr),
+            Backend::Wgc
+        );
+    }
+
+    #[test]
+    fn explicit_backend_overrides_color_mode() {
+        assert_eq!(
+            preferred_backend(Backend::Gdi, ColorMode::Hdr),
+            Backend::Gdi
+        );
+        assert_eq!(
+            preferred_backend(Backend::Wgc, ColorMode::Sdr),
+            Backend::Wgc
+        );
     }
 }

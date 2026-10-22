@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "screen_shot_fx"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "embed-resource",
