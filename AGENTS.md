@@ -13,7 +13,8 @@ ScreenShot FX 是一个 Windows 11 x64 常驻托盘截图工具：
 - `Shift+F2` 快速截图：静默截取鼠标所在显示器，保存 PNG，可选复制到剪贴板。
 - 默认 GDI 抓取；真 HDR 与“兼容模式”使用 Windows Graphics Capture（WGC）。
 - TOML 配置、HKCU 开机自启、单实例、托盘菜单、日志文件。
-- 明确不做：标注/涂鸦、OCR、录屏、滚动截图、设置 GUI、上传、自动更新、ARM64。
+- 托盘菜单“快捷键设置…”可录制并即时替换两种截图方式的全局热键。
+- 明确不做：标注/涂鸦、OCR、录屏、滚动截图、完整设置 GUI（仅有快捷键设置小窗口）、上传、自动更新、ARM64。
 
 ## 2. 技术栈与前提
 
@@ -116,6 +117,7 @@ New-Item -ItemType Directory -Force "$run\Roaming\ScreenShotFX", "$run\LocalAppD
 | `src/main.rs` | 入口；PMv2 DPI/COM 初始化；CLI 解析；分派到托盘或诊断命令 |
 | `src/app.rs` | 单实例互斥体、隐藏主窗口、托盘、全局热键、菜单、`start_selection`/`quick_capture`、消息循环 |
 | `src/config.rs` | `AppConfig`、`Backend`、快捷键解析、默认模板、校验/钳制、`toml_edit` 局部更新 |
+| `src/hotkey_settings.rs` | 快捷键设置模态窗口、临时 `WH_KEYBOARD_LL` 录制、组合键校验、保存/恢复默认 |
 | `src/monitor.rs` | `MonitorInfo`、显示器枚举、DPI、颜色模式、虚拟桌面、选屏、`--monitor` 查找 |
 | `src/capture/mod.rs` | `CapturedImage`、虚拟桌面 `Frame`（BGRA top-down）、合成/裁剪/取色、后端策略、逐屏回退 |
 | `src/capture/gdi.rs` | `CreateDCW`/`BitBlt`（`SRCCOPY + CAPTUREBLT`）、32bpp top-down DIB；设备 DC 失败时退回虚拟桌面 DC |
@@ -147,6 +149,7 @@ New-Item -ItemType Directory -Force "$run\Roaming\ScreenShotFX", "$run\LocalAppD
    - 读取/创建配置；首次运行（`autostart_initialized=false`）默认写自启；`autostart::sync` 校准 HKCU Run。
    - 解析快捷键；注册隐藏主窗口类 `FxShotMainWindow`、创建隐藏主窗口、托盘图标、`RegisterHotKey`。
    - 消息循环：`WM_HOTKEY`（1=选区、2=快速）、托盘消息、遮罩关闭/按键消息、`WM_DISPLAYCHANGE`（关闭遮罩）、托盘重建、退出。
+   - 托盘“快捷键设置…”打开模态窗口；窗口打开期间忽略 `WM_HOTKEY` 和托盘点击，保存时原子替换注册并写回配置。
 
 ### 4.3 选区截图数据流
 
@@ -200,6 +203,7 @@ Windows 的“高级颜色”包含三种活动模式，**不能把它们都当�
 ### 4.7 资源与线程
 
 - UI 单线程；截图在消息线程同步完成。不要在消息处理里加入长时间阻塞或网络/睡眠循环。
+- 快捷键设置窗口使用嵌套消息循环，不开新线程；录制钩子只在点击“录制…”后存在，结束/取消/关闭窗口必须卸载。
 - GDI 对象必须成对释放：`SelectObject` 恢复旧对象、`DeleteObject`、`DeleteDC`；`FrameSurface`/`DimSurface`/`OverlayWindow` 用 `Drop` 兜底。
 - WGC 必须在所有路径关闭 `GraphicsCaptureSession` 和帧池；Map 成功后必须 Unmap。
 - 剪贴板：`GlobalAlloc` 失败路径要 `GlobalFree`；`SetClipboardData` 成功后所有权归系统，不要再释放。
@@ -216,10 +220,10 @@ Windows 的“高级颜色”包含三种活动模式，**不能把它们都当�
 7. **抓取失败要回退**：`capture_monitor_with_fallback` 已处理 GDI/WGC 互备；新增后端要保持“失败记录日志 + 明确回退”的行为。
 8. **不要捕获自己**：窗口枚举排除本进程 PID、工具窗口、cloaked/不可见窗口；遮罩窗口也是 `WS_EX_TOOLWINDOW`。
 9. **原始 FFI 结构**：`AdvancedColorInfo2` 的布局、`size`、`type=15` 是硬约束；改字段必须同步 `size_of` 测试与实机验证。
-10. **配置写入要保注释**：运行时修改只用 `config::update_runtime_flags`（`toml_edit`），不要整文件重写；配置是 UTF-8，手写临时配置用无 BOM。
+10. **配置写入要保注释**：运行时修改只用 `config::update_runtime_flags` / `config::update_hotkeys`（`toml_edit`），不要整文件重写；配置是 UTF-8，手写临时配置用无 BOM。
 11. **不要加管理员权限**：清单是 `asInvoker`；提权会让热键/剪贴板/截图行为变复杂。
 12. **无网络/遥测**：不要在代码或脚本里引入上传、检查更新、统计。
-13. **快捷键冲突**：注册失败要记录并提示，不要静默覆盖；`select_hotkey` 与 `quick_hotkey` 不能相同。
+13. **快捷键冲突**：注册失败要记录并提示，不要静默覆盖；`select_hotkey` 与 `quick_hotkey` 不能相同。设置窗口保存时先注册新组合、成功后才写配置；冲突/写配置失败必须回滚旧注册并保持窗口打开。
 14. **`--autostart` 现状（已知小问题）**：`autostart.rs` 写入的启动命令带 `--autostart`，但 `main` 没有对应分支，登录时会记录 `ignoring unknown argument: --autostart`。若要清理，加显式 no-op 分支或调整命令行，并回归自启测试。
 15. **发布版本三处同步**：`Cargo.toml`、`Cargo.lock`（随构建更新）、`assets/app.rc` 的 `FILEVERSION`/`PRODUCTVERSION`/`FileVersion`/`ProductVersion`；Release 工作流会校验。
 
@@ -241,7 +245,7 @@ cargo test --all-targets --locked
 - auto / gdi / wgc 三种后端；HDR 开/关；WCG/ACM 开/关。
 - 选区：悬停吸附窗口、拖拽、锁定后移动/缩放、工具条、取色、`C`、`Shift`、方向键、`Esc`/`Enter`/`Space`/`Ctrl+C`。
 - 快速截图：两块屏各一次；剪贴板；保存目录不可写时的错误提示。
-- 托盘：重新加载配置、兼容模式切换、开机自启、退出；单实例重复启动。
+- 托盘：快捷键设置（录制/保存/取消/恢复默认/冲突拒绝）、重新加载配置、兼容模式切换、开机自启、退出；单实例重复启动。
 - 显示变化：截图期间改分辨率/拔插显示器（应关闭遮罩）。
 - 日志：失败路径有 `backend ... failed` / `fallback`，成功路径有 `captured ... mode=... with ...`。
 

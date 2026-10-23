@@ -6,6 +6,7 @@
 save_dir = "%USERPROFILE%\\Pictures\\fx"
 
 # 全局快捷键。必须至少包含一个修饰键（Shift/Ctrl/Alt/Win）。
+# 也可以在托盘菜单“快捷键设置…”中直接录制修改，保存后立即生效。
 select_hotkey = "Shift+F1"
 quick_hotkey = "Shift+F2"
 

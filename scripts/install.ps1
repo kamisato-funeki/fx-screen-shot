@@ -73,7 +73,8 @@ if (-not $NoStart) {
 
 Write-Host ''
 Write-Host '安装完成。'
-Write-Host '  Shift+F1  选区截图'
-Write-Host '  Shift+F2  快速截图（鼠标所在显示器）'
+Write-Host '  默认快捷键  Shift+F1  选区截图'
+Write-Host '  默认快捷键  Shift+F2  快速截图（鼠标所在显示器）'
+Write-Host '  可在托盘菜单“快捷键设置…”中修改'
 Write-Host "  程序位置  $target"
 Write-Host '  卸载脚本  scripts\uninstall.ps1'

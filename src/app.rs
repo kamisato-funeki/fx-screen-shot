@@ -29,6 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::autostart;
 use crate::capture;
 use crate::config::{self, AppConfig, Backend, Hotkey};
+use crate::hotkey_settings;
 use crate::logging;
 use crate::monitor;
 use crate::naming;
@@ -50,6 +51,7 @@ const MENU_COMPAT: u32 = 1006;
 const MENU_RELOAD: u32 = 1007;
 const MENU_ABOUT: u32 = 1008;
 const MENU_EXIT: u32 = 1009;
+const MENU_HOTKEYS: u32 = 1010;
 
 struct Runtime {
     config: AppConfig,
@@ -340,10 +342,8 @@ fn add_tray_icon(hwnd: HWND, log_failure: bool) -> bool {
         hIcon: icon,
         ..Default::default()
     };
-    copy_wide(
-        &mut data.szTip,
-        "ScreenShot FX\nShift+F1 选区 / Shift+F2 快速",
-    );
+    let tip = tray_tip_text();
+    copy_wide(&mut data.szTip, &tip);
     let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &data) }.as_bool();
     if !ok && log_failure {
         let error = unsafe { GetLastError() };
@@ -353,6 +353,33 @@ fn add_tray_icon(hwnd: HWND, log_failure: bool) -> bool {
         ));
     }
     ok
+}
+
+fn tray_tip_text() -> String {
+    let (select, quick) = with_runtime(|runtime| runtime.hotkeys).unwrap_or_else(fallback_hotkeys);
+    format!(
+        "ScreenShot FX\n{} 选区 / {} 快速",
+        select.display(),
+        quick.display()
+    )
+}
+
+fn update_tray_tip(hwnd: HWND) {
+    if TRAY_ICON.load(Ordering::SeqCst) == 0 {
+        return;
+    }
+    let tip = tray_tip_text();
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_TIP,
+        ..Default::default()
+    };
+    copy_wide(&mut data.szTip, &tip);
+    if !unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) }.as_bool() {
+        logging::warn("Shell_NotifyIconW(NIM_MODIFY, NIF_TIP) failed");
+    }
 }
 
 fn remove_tray_icon(hwnd: HWND) {
@@ -409,9 +436,11 @@ fn register_hotkeys(hwnd: HWND, select: Hotkey, quick: Hotkey) -> Result<(), Str
     }
     .is_err()
     {
+        let error = unsafe { GetLastError() };
         errors.push(format!(
-            "{} 注册失败（可能被其他程序占用）",
-            select.display()
+            "{} 注册失败（可能被其他程序占用，Windows error {}）",
+            select.display(),
+            error.0
         ));
     }
     if unsafe {
@@ -424,9 +453,11 @@ fn register_hotkeys(hwnd: HWND, select: Hotkey, quick: Hotkey) -> Result<(), Str
     }
     .is_err()
     {
+        let error = unsafe { GetLastError() };
         errors.push(format!(
-            "{} 注册失败（可能被其他程序占用）",
-            quick.display()
+            "{} 注册失败（可能被其他程序占用，Windows error {}）",
+            quick.display(),
+            error.0
         ));
     }
     if errors.is_empty() {
@@ -439,6 +470,63 @@ fn register_hotkeys(hwnd: HWND, select: Hotkey, quick: Hotkey) -> Result<(), Str
     } else {
         Err(errors.join("；"))
     }
+}
+
+pub(crate) fn apply_hotkeys(hwnd: HWND, select: Hotkey, quick: Hotkey) -> Result<(), String> {
+    let Some((old_select, old_quick)) = with_runtime(|runtime| runtime.hotkeys) else {
+        return Err("运行时状态不可用".to_string());
+    };
+    if select == old_select && quick == old_quick {
+        return Ok(());
+    }
+
+    unregister_hotkeys(hwnd);
+    if let Err(err) = register_hotkeys(hwnd, select, quick) {
+        unregister_hotkeys(hwnd);
+        if let Err(restore) = register_hotkeys(hwnd, old_select, old_quick) {
+            logging::error(&format!("restore old hotkeys failed: {restore}"));
+            return Err(format!(
+                "{err}；恢复旧快捷键也失败：{restore}，请重启程序或重新加载配置"
+            ));
+        }
+        return Err(err);
+    }
+
+    let select_text = select.display();
+    let quick_text = quick.display();
+    if let Err(err) = config::update_hotkeys(&select_text, &quick_text) {
+        unregister_hotkeys(hwnd);
+        if let Err(restore) = register_hotkeys(hwnd, old_select, old_quick) {
+            logging::error(&format!("restore old hotkeys failed: {restore}"));
+            return Err(format!(
+                "保存配置失败：{err:#}；恢复旧快捷键也失败：{restore}，请重启程序"
+            ));
+        }
+        return Err(format!("保存配置失败：{err:#}"));
+    }
+
+    if let Some(runtime) = RUNTIME.get() {
+        if let Ok(mut runtime) = runtime.lock() {
+            runtime.config.select_hotkey = select_text.clone();
+            runtime.config.quick_hotkey = quick_text.clone();
+            runtime.hotkeys = (select, quick);
+        } else {
+            logging::warn("runtime lock poisoned while updating hotkeys");
+        }
+    }
+
+    update_tray_tip(hwnd);
+    logging::info(&format!(
+        "hotkeys updated: {} and {}",
+        select_text, quick_text
+    ));
+    show_balloon(
+        hwnd,
+        "ScreenShot FX",
+        &format!("快捷键已更新：{select_text} / {quick_text}"),
+        false,
+    );
+    Ok(())
 }
 
 fn unregister_hotkeys(hwnd: HWND) {
@@ -591,6 +679,7 @@ fn show_menu(hwnd: HWND) {
     append_menu(menu, MF_STRING, MENU_SELECT, &select_text);
     append_menu(menu, MF_STRING, MENU_QUICK, &quick_text);
     append_menu(menu, MF_SEPARATOR, 0, "");
+    append_menu(menu, MF_STRING, MENU_HOTKEYS, "快捷键设置…");
     append_menu(menu, MF_STRING, MENU_OPEN_SAVE, "打开保存目录");
     append_menu(menu, MF_STRING, MENU_OPEN_CONFIG, "打开配置目录");
     append_menu(
@@ -653,10 +742,22 @@ fn append_menu(
     let _ = unsafe { AppendMenuW(menu, flags, id as usize, PCWSTR(wide.as_ptr())) };
 }
 
+fn show_hotkey_settings(hwnd: HWND) {
+    if overlay::is_active() {
+        overlay::finish();
+        overlay::flush_after_close();
+    }
+    let current = with_runtime(|runtime| runtime.hotkeys).unwrap_or_else(fallback_hotkeys);
+    if let Err(err) = hotkey_settings::show(hwnd, current) {
+        notify_error(hwnd, &format!("打开快捷键设置失败：{err}"));
+    }
+}
+
 fn handle_menu_command(hwnd: HWND, command: u32) {
     match command {
         MENU_SELECT => start_selection(hwnd),
         MENU_QUICK => quick_capture(hwnd),
+        MENU_HOTKEYS => show_hotkey_settings(hwnd),
         MENU_OPEN_SAVE => {
             if let Some(path) =
                 with_runtime(|runtime| std::path::PathBuf::from(&runtime.config.save_dir))
@@ -755,6 +856,8 @@ fn reload_config(hwnd: HWND) {
         }
     }
 
+    update_tray_tip(hwnd);
+
     if let Err(err) = autostart::sync(
         with_runtime(|runtime| runtime.config.autostart).unwrap_or(true),
         &win_util::current_exe(),
@@ -786,7 +889,7 @@ fn show_about(hwnd: HWND) {
     });
 
     let text = format!(
-        "ScreenShot FX {}\n\n选区截图：{}\n快速截图：{}\n保存目录：{}\n配置文件：{}\n日志：{}\n当前后端：{}",
+        "ScreenShot FX {}\n\n选区截图：{}\n快速截图：{}\n快捷键可在托盘菜单“快捷键设置…”中修改。\n\n保存目录：{}\n配置文件：{}\n日志：{}\n当前后端：{}",
         env!("CARGO_PKG_VERSION"),
         select,
         quick,
@@ -824,6 +927,9 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_HOTKEY => {
+            if hotkey_settings::is_open() {
+                return LRESULT(0);
+            }
             match wparam.0 as i32 {
                 1 => start_selection(hwnd),
                 2 => quick_capture(hwnd),
@@ -832,6 +938,9 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_APP_TRAY => {
+            if hotkey_settings::is_open() {
+                return LRESULT(0);
+            }
             let event = lparam.0 as u32;
             if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
                 start_selection(hwnd);

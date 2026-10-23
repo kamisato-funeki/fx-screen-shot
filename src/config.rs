@@ -15,6 +15,7 @@ pub const MOD_CONTROL: u32 = 0x0002;
 pub const MOD_SHIFT: u32 = 0x0004;
 pub const MOD_WIN: u32 = 0x0008;
 pub const MOD_NOREPEAT: u32 = 0x4000;
+pub const KNOWN_MODIFIER_MASK: u32 = MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -220,6 +221,7 @@ fn write_default_config(path: &Path, config: &AppConfig) -> Result<()> {
 save_dir = "{save_dir}"
 
 # 全局快捷键。必须至少包含一个修饰键（Shift/Ctrl/Alt/Win）。
+# 也可以在托盘菜单“快捷键设置…”中直接录制修改，保存后立即生效。
 select_hotkey = "{select_hotkey}"
 quick_hotkey = "{quick_hotkey}"
 
@@ -289,6 +291,38 @@ pub fn update_runtime_flags(
     Ok(())
 }
 
+/// Updates only the two hotkey values, preserving comments and other keys.
+pub fn update_hotkeys(select: &str, quick: &str) -> Result<()> {
+    let path = config_path();
+    let text =
+        fs::read_to_string(&path).with_context(|| format!("读取配置失败：{}", path.display()))?;
+    let updated = rewrite_hotkeys(&text, select, quick)?;
+    fs::write(&path, updated).with_context(|| format!("写入配置失败：{}", path.display()))?;
+    Ok(())
+}
+
+fn rewrite_hotkeys(text: &str, select: &str, quick: &str) -> Result<String> {
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .context("配置文件不是有效的 TOML")?;
+    set_hotkey_value(&mut document, "select_hotkey", select);
+    set_hotkey_value(&mut document, "quick_hotkey", quick);
+    Ok(document.to_string())
+}
+
+fn set_hotkey_value(document: &mut toml_edit::DocumentMut, key: &str, text: &str) {
+    // Keep the original inline comment/whitespace decor when the key exists.
+    let decor = document
+        .get(key)
+        .and_then(|item| item.as_value())
+        .map(|value| value.decor().clone());
+    let mut item = toml_edit::value(text);
+    if let (Some(decor), Some(value)) = (decor, item.as_value_mut()) {
+        *value.decor_mut() = decor;
+    }
+    document[key] = item;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hotkey {
     pub modifiers: u32,
@@ -331,6 +365,22 @@ impl Hotkey {
             return Err(format!("快捷键 {text:?} 必须包含修饰键"));
         }
         let vk = virtual_key_for_name(key).ok_or_else(|| format!("不支持的按键 {key:?}"))?;
+        Ok(Self { modifiers, vk })
+    }
+
+    pub fn from_parts(modifiers: u32, vk: u32) -> Result<Self, String> {
+        if modifiers & KNOWN_MODIFIER_MASK == 0 {
+            return Err("快捷键必须包含至少一个修饰键".to_string());
+        }
+        if modifiers & !KNOWN_MODIFIER_MASK != 0 {
+            return Err(format!("快捷键包含未知修饰位：0x{modifiers:04X}"));
+        }
+        if is_modifier_vk(vk) {
+            return Err(format!("按键 {} 只能作为修饰键", virtual_key_name(vk)));
+        }
+        if !is_supported_vk(vk) {
+            return Err(format!("不支持的按键 VK_{vk:02X}"));
+        }
         Ok(Self { modifiers, vk })
     }
 
@@ -417,13 +467,43 @@ fn virtual_key_name(vk: u32) -> String {
     }
 }
 
-pub fn parse_hotkeys(config: &AppConfig) -> Result<(Hotkey, Hotkey), String> {
-    let select = Hotkey::parse(&config.select_hotkey)?;
-    let quick = Hotkey::parse(&config.quick_hotkey)?;
+fn is_supported_vk(vk: u32) -> bool {
+    matches!(
+        vk,
+        0x41..=0x5A
+            | 0x30..=0x39
+            | 0x70..=0x87
+            | 0x20
+            | 0x09
+            | 0x0D
+            | 0x1B
+            | 0x08
+            | 0x2D
+            | 0x2E
+            | 0x24
+            | 0x23
+            | 0x21
+            | 0x22
+            | 0x2C
+            | 0x13
+    )
+}
+
+fn is_modifier_vk(vk: u32) -> bool {
+    matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
+}
+
+pub fn validate_hotkeys(select_text: &str, quick_text: &str) -> Result<(Hotkey, Hotkey), String> {
+    let select = Hotkey::parse(select_text)?;
+    let quick = Hotkey::parse(quick_text)?;
     if select == quick {
         return Err("选区与快速快捷键不能相同".to_string());
     }
     Ok((select, quick))
+}
+
+pub fn parse_hotkeys(config: &AppConfig) -> Result<(Hotkey, Hotkey), String> {
+    validate_hotkeys(&config.select_hotkey, &config.quick_hotkey)
 }
 
 pub fn config_exists() -> bool {
@@ -472,6 +552,46 @@ mod tests {
         assert!(Hotkey::parse("Shift+Unknown").is_err());
         assert!(Hotkey::parse("Shift+A+B").is_err());
         assert!(Hotkey::parse("Shift+F25").is_err());
+    }
+
+    #[test]
+    fn builds_hotkeys_from_recorded_parts() {
+        let hotkey = Hotkey::from_parts(MOD_SHIFT | MOD_CONTROL, 0x70).unwrap();
+        assert_eq!(hotkey.display(), "Ctrl+Shift+F1");
+
+        assert!(Hotkey::from_parts(0, 0x70).is_err());
+        assert!(Hotkey::from_parts(MOD_SHIFT, 0x10).is_err());
+        assert!(Hotkey::from_parts(MOD_SHIFT, 0x25).is_err());
+        assert!(Hotkey::from_parts(MOD_SHIFT | 0x8000, 0x70).is_err());
+    }
+
+    #[test]
+    fn validates_and_rejects_equal_custom_hotkeys() {
+        let pair = validate_hotkeys("Ctrl+Alt+F1", "Ctrl+Shift+F2").unwrap();
+        assert_eq!(pair.0.display(), "Ctrl+Alt+F1");
+        assert_eq!(pair.1.display(), "Ctrl+Shift+F2");
+        assert!(validate_hotkeys("Shift+F1", "Shift+F1").is_err());
+        assert!(validate_hotkeys("Shift+F1", "F2").is_err());
+    }
+
+    #[test]
+    fn rewrites_hotkeys_preserving_comments_and_other_keys() {
+        let text = r#"# top comment
+select_hotkey = "Shift+F1" # select inline
+quick_hotkey = "Shift+F2"
+backend = "auto"
+
+# keep me
+snap_distance = 10
+"#;
+        let updated = rewrite_hotkeys(text, "Ctrl+Alt+F1", "Ctrl+Shift+F2").unwrap();
+        assert!(updated.contains("# top comment"));
+        assert!(updated.contains("# select inline"));
+        assert!(updated.contains("# keep me"));
+        assert!(updated.contains("select_hotkey = \"Ctrl+Alt+F1\""));
+        assert!(updated.contains("quick_hotkey = \"Ctrl+Shift+F2\""));
+        assert!(updated.contains("backend = \"auto\""));
+        assert!(updated.contains("snap_distance = 10"));
     }
 
     #[test]
