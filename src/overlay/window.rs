@@ -195,7 +195,7 @@ pub(super) fn apply_session_cursor() {
     set_cursor(kind);
 }
 
-pub(super) fn set_cursor(kind: CursorKind) {
+pub(crate) fn set_cursor(kind: CursorKind) {
     let cursor = match kind {
         CursorKind::Crosshair => system_cursor(IDC_CROSS),
         CursorKind::Arrow => system_cursor(IDC_ARROW),
@@ -567,7 +567,7 @@ fn color(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | ((g as u32) << 8) | ((b as u32) << 16))
 }
 
-fn create_dib_surface_with_bits(
+pub(crate) fn create_dib_surface_with_bits(
     width: u32,
     height: u32,
 ) -> Result<(HDC, HBITMAP, HGDIOBJ, *mut core::ffi::c_void)> {
@@ -609,7 +609,7 @@ fn create_dib_surface_with_bits(
     Ok((dc, bitmap, old, bits))
 }
 
-fn cleanup_surface(dc: HDC, bitmap: HBITMAP, old: HGDIOBJ) {
+pub(crate) fn cleanup_surface(dc: HDC, bitmap: HBITMAP, old: HGDIOBJ) {
     unsafe {
         if !old.0.is_null() {
             let _ = SelectObject(dc, old);

@@ -9,7 +9,7 @@
 ScreenShot FX 是一个 Windows 11 x64 常驻托盘截图工具：
 
 - Rust 编写，单文件 `fxshot.exe`，`asInvoker`，无管理员权限、无网络、无遥测。
-- `Shift+F1` 选区截图：冻结全屏帧 → 每块显示器一个遮罩窗口 → 悬停吸附窗口/拖拽选区 → 工具条保存/复制 → 取色、方向键微调。
+- `Shift+F1` 选区截图：冻结全屏帧 → 每块显示器一个遮罩窗口 → 悬停吸附窗口/拖拽选区 → 工具条保存/复制/钉图 → 取色、方向键微调。
 - `Shift+F2` 快速截图：静默截取鼠标所在显示器，保存 PNG，可选复制到剪贴板。
 - 默认 GDI 抓取；真 HDR 与“兼容模式”使用 Windows Graphics Capture（WGC）。
 - TOML 配置、HKCU 开机自启、单实例、托盘菜单、日志文件。
@@ -91,6 +91,9 @@ fxshot.exe --no-autostart
   - `captured \\.\DISPLAY1 3840x2160 mode=wcg with gdi`
   - `wgc \\.\DISPLAY1 format=bgra8 mode=wcg`
   - `quick capture \\.\DISPLAY1 with gdi`
+  - `pin created 640x480 at (100, 200) source=640x480 scale=1.00 opacity=100`
+  - `pin closed 640x480`
+  - `pin wheel hook installed` / `pin wheel hook uninstalled`
 
 ### 3.4 测试隔离
 
@@ -131,6 +134,9 @@ New-Item -ItemType Directory -Force "$run\Roaming\ScreenShotFX", "$run\LocalAppD
 | `src/overlay/toolbar.rs` | 工具条尺寸/布局/按钮命中，`scale()` 统一 96-DPI 基准缩放 |
 | `src/overlay/color.rs` | 取色面板、9×9 放大镜、RGB/HEX 格式 |
 | `src/overlay/keyboard.rs` | 仅遮罩期间安装的 `WH_KEYBOARD_LL` 钩子，向主窗口投递 `WM_APP_OVERLAY_KEY` |
+| `src/pin/mod.rs` | 钉图生命周期、线程局部管理器、窗口类注册、临时鼠标滚轮钩子、显示变化约束 |
+| `src/pin/window.rs` | 钉图窗口过程、BGRA 绘制、X/边框、滚轮/拖拽输入、DPI 变化 |
+| `src/pin/geometry.rs` | 钉图命中测试、等比缩放、边界/空隙钳制、透明度步进的纯函数与单测 |
 | `src/win_util.rs` | 顶层窗口枚举/DWM 边界/Shell Known Folder/窗口标题类名/鼠标按键状态 |
 | `src/naming.rs` | `Screenshot_<时间戳>.png` 命名、`create_new` 去重、PNG 编码 |
 | `src/logging.rs` | UTF-8 追加日志、逐行 flush、1 MB 轮转到 `fxshot.log.1` |
@@ -148,7 +154,7 @@ New-Item -ItemType Directory -Force "$run\Roaming\ScreenShotFX", "$run\LocalAppD
    - 创建单实例互斥体 `Local\ScreenShotFX.Singleton`（可用 `FXSHOT_MUTEX_NAME` 覆盖）；已存在则向已有实例投递 `WM_APP_ALREADY_RUNNING`。
    - 读取/创建配置；首次运行（`autostart_initialized=false`）默认写自启；`autostart::sync` 校准 HKCU Run。
    - 解析快捷键；注册隐藏主窗口类 `FxShotMainWindow`、创建隐藏主窗口、托盘图标、`RegisterHotKey`。
-   - 消息循环：`WM_HOTKEY`（1=选区、2=快速）、托盘消息、遮罩关闭/按键消息、`WM_DISPLAYCHANGE`（关闭遮罩）、托盘重建、退出。
+   - 消息循环：`WM_HOTKEY`（1=选区、2=快速）、托盘消息、遮罩关闭/按键消息、钉图关闭/滚轮消息、`WM_DISPLAYCHANGE`（关闭遮罩并重新约束钉图）、托盘重建、退出。
    - 托盘“快捷键设置…”打开模态窗口；窗口打开期间忽略 `WM_HOTKEY` 和托盘点击，保存时原子替换注册并写回配置。
 
 ### 4.3 选区截图数据流
@@ -163,14 +169,23 @@ New-Item -ItemType Directory -Force "$run\Roaming\ScreenShotFX", "$run\LocalAppD
    - 选区区域重新 BitBlt（不压暗）、画边框和尺寸/标题标签；
    - 锁定后画工具条；鼠标所在屏画取色面板/放大镜；
    - `force_opaque` 把 alpha 全置 255；`BitBlt` 到窗口 DC；`EndPaint`。
-6. 输入：悬停吸附窗口 → 拖拽/吸附 → 锁定；拖动内部移动、边角缩放；工具条保存/复制/取消；`C` 复制色值、`Shift` 切 RGB/HEX、方向键 1px 微调、`Ctrl+C` 复制选区、`Enter`/`Space` 保存、`Esc`/右键取消。
+6. 输入：悬停吸附窗口 → 拖拽/吸附 → 锁定；拖动内部移动、边角缩放；工具条保存/复制/钉图/取消；`C` 复制色值、`Shift` 切 RGB/HEX、方向键 1px 微调、`Ctrl+C` 复制选区、`Enter`/`Space` 保存、`Esc`/右键取消。
 7. 保存：`frame.crop_rgb(selection)` → `naming::save_png`；可选 `clipboard::copy_rgb`；关闭遮罩并 `DwmFlush` + 30 ms 等待合成器清理。
+8. 钉图：工具条“钉图”用 `frame.crop_bgra(selection)` 生成 `PinRequest`，存入 `pending_pin`；`overlay::finish` 先销毁遮罩/键盘钩子，再调用 `pin::create`。钉图是独立 `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED` 窗口，保留原始 BGRA 快照，缩放只改窗口矩形；最后一张关闭时卸载临时 `WH_MOUSE_LL` 滚轮钩子。
 
-### 4.4 快速截图数据流
+### 4.4 钉图交互与约束
+
+- 初始位置/尺寸与选区一致；源图 DIB 按原分辨率保存，`StretchBlt` + `HALFTONE` 绘制。
+- 滚轮以窗口中心为锚点等比缩放，步长 10% 原图，范围 10%–400%；`Ctrl+滚轮` 改整窗 alpha（10%–100%，每格 10%）。
+- 拖边框/角用 `edit::resize_rect` 得到原始边，再按原图宽高比重新推导尺寸；对侧边/角固定，自由轴保持中心。
+- 移动/缩放统一钳制到虚拟桌面；布局存在非矩形空隙时，额外保证至少与一块显示器相交。
+- Esc 只在该钉图有焦点时生效；不安装全局键盘钩子。滚轮悬停生效依赖钉图存在期的临时鼠标钩子。
+
+### 4.5 快速截图数据流
 
 `GetCursorPos` → `monitor::select_monitor`（点在屏内优先，否则最近）→ 单屏 `capture_monitor_with_fallback` → BGRA→RGB → PNG + 可选剪贴板。全程无窗口、无提示音、无焦点变化。
 
-### 4.5 颜色管线（0.1.3 修复重点，务必理解）
+### 4.6 颜色管线（0.1.3 修复重点，务必理解）
 
 Windows 的“高级颜色”包含三种活动模式，**不能把它们都当成 HDR**：
 
@@ -191,7 +206,7 @@ Windows 的“高级颜色”包含三种活动模式，**不能把它们都当�
 - **历史故障**：0.1.2 及以前把 `advancedColorEnabled` 当 HDR，K27（WCG、HDR 关）被送进 FP16 + `1-exp(-3x)`，SDR 中间调被提亮，遮罩和保存 PNG 都发白。修复后 auto 走 GDI、强制 WGC 走 BGRA8。
 - HDR 路径的 tone map 曲线与 SDR 白点归一化目前保持原样；没有真 HDR 环境时不要凭感觉改它。
 
-### 4.6 坐标与 DPI 不变量
+### 4.7 坐标与 DPI 不变量
 
 - 进程是 **PerMonitorV2**；`MonitorInfo.rect`、窗口矩形、选区、取色坐标全部是**全局物理像素**。
 - `Rect` 是半开区间（`right`/`bottom` 不含）；宽高用 `saturating_sub`。
@@ -200,14 +215,16 @@ Windows 的“高级颜色”包含三种活动模式，**不能把它们都当�
 - UI 尺寸以 96 DPI 为基准，用 `toolbar::scale(value, dpi)` 缩放；吸附阈值同样按当前屏 DPI 缩放。
 - 测试涉及多屏时，覆盖负坐标与不同 DPI；不要假设主屏在 (0,0) 或只有一块屏。
 
-### 4.7 资源与线程
+### 4.8 资源与线程
 
 - UI 单线程；截图在消息线程同步完成。不要在消息处理里加入长时间阻塞或网络/睡眠循环。
 - 快捷键设置窗口使用嵌套消息循环，不开新线程；录制钩子只在点击“录制…”后存在，结束/取消/关闭窗口必须卸载。
-- GDI 对象必须成对释放：`SelectObject` 恢复旧对象、`DeleteObject`、`DeleteDC`；`FrameSurface`/`DimSurface`/`OverlayWindow` 用 `Drop` 兜底。
+- 钉图窗口同样在 UI 线程；线程局部 `PINS` 用 `try_borrow`/`try_borrow_mut`，不要在持有借用时调用可能重入的 Win32（`SetWindowPos`、`DestroyWindow`、`SetCapture`）；关闭先移除状态，再销毁窗口。
+- GDI 对象必须成对释放：`SelectObject` 恢复旧对象、`DeleteObject`、`DeleteDC`；`FrameSurface`/`DimSurface`/`OverlayWindow`/`PinSurface` 用 `Drop` 兜底。
+- `WH_MOUSE_LL` 只在存在钉图时安装；首张安装、最后一张关闭/`close_all`/线程结束时必须卸载。不要在 `WM_CAPTURECHANGED` 里无条件 `ReleaseCapture`，避免抢走同线程另一窗口的 capture。
 - WGC 必须在所有路径关闭 `GraphicsCaptureSession` 和帧池；Map 成功后必须 Unmap。
 - 剪贴板：`GlobalAlloc` 失败路径要 `GlobalFree`；`SetClipboardData` 成功后所有权归系统，不要再释放。
-- 日志写入在 UI 线程，逐行 flush；不要在高频循环里刷日志。
+- 日志写入在 UI 线程，逐行 flush；不要在高频循环里刷日志（滚轮/拖动不要逐帧记录）。
 
 ## 5. 关键不变量与常见坑
 
@@ -226,6 +243,10 @@ Windows 的“高级颜色”包含三种活动模式，**不能把它们都当�
 13. **快捷键冲突**：注册失败要记录并提示，不要静默覆盖；`select_hotkey` 与 `quick_hotkey` 不能相同。设置窗口保存时先注册新组合、成功后才写配置；冲突/写配置失败必须回滚旧注册并保持窗口打开。
 14. **`--autostart` 现状（已知小问题）**：`autostart.rs` 写入的启动命令带 `--autostart`，但 `main` 没有对应分支，登录时会记录 `ignoring unknown argument: --autostart`。若要清理，加显式 no-op 分支或调整命令行，并回归自启测试。
 15. **发布版本三处同步**：`Cargo.toml`、`Cargo.lock`（随构建更新）、`assets/app.rc` 的 `FILEVERSION`/`PRODUCTVERSION`/`FileVersion`/`ProductVersion`；Release 工作流会校验。
+16. **钉图不是遮罩**：钉图是独立 `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED` 窗口，不能套用遮罩的“alpha 强制 255/不做分层”规则；它保留原分辨率 BGRA 快照，缩放只改窗口矩形，源图不变。
+17. **钉图生命周期独立**：关闭遮罩、开始新截图、打开快捷键设置都不关闭钉图；`overlay::finish` 只负责把 `pending_pin` 交给 `pin::create`。应用退出/系统注销统一 `pin::close_all()`。
+18. **钉图鼠标钩子有严格边界**：只吞落在钉图上的垂直滚轮；不安装全局键盘钩子；Esc 必须依赖钉图焦点。钩子失败要记录并保留“点击后滚轮”的降级路径。
+19. **钉图 DIB 不要泄漏**：`PinSurface` 必须在窗口销毁后 Drop；`DestroyWindow` 前不要留下指向源 DIB 的状态，`WM_NCDESTROY` 负责兜底清理。
 
 ## 6. 测试策略
 
@@ -237,16 +258,17 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all-targets --locked
 ```
 
-单测集中在纯逻辑：`geometry`、`overlay/edit`、`overlay/snap`、`overlay/color`、`overlay/toolbar`、`config`、`naming`、`capture/hdr`、`capture/mod`、`monitor`、`overlay`。新增 Windows API 调用时，把可判定部分抽成纯函数（如模式映射、策略选择）并补测；不要为了测试去依赖真实显示器。
+单测集中在纯逻辑：`geometry`、`overlay/edit`、`overlay/snap`、`overlay/color`、`overlay/toolbar`、`pin/geometry`、`config`、`naming`、`capture/hdr`、`capture/mod`、`monitor`、`overlay`。新增 Windows API 调用时，把可判定部分抽成纯函数（如模式映射、策略选择、缩放/命中/透明度步进）并补测；不要为了测试去依赖真实显示器或交互桌面。
 
 ### 6.2 手工矩阵（涉及 UI/抓取时必须覆盖）
 
 - 单屏 / 双屏 / 负坐标 / 主副屏互换；100%、150%、200% 缩放；旋转屏。
 - auto / gdi / wgc 三种后端；HDR 开/关；WCG/ACM 开/关。
 - 选区：悬停吸附窗口、拖拽、锁定后移动/缩放、工具条、取色、`C`、`Shift`、方向键、`Esc`/`Enter`/`Space`/`Ctrl+C`。
+- 钉图：工具条“钉图”后遮罩关闭且位置/尺寸一致；X 与 Esc（有焦点）只关闭当前钉图；多张钉图互不影响；悬停滚轮缩放（中心锚点、10%/400%）、`Ctrl+滚轮` 透明度（10%–100%）、8 个边框/角等比缩放、内部拖动、跨屏 DPI 变化、显示分辨率/拔插后的重新约束、退出清理；日志出现 `pin created` / `pin closed` / `pin wheel hook ...`。
 - 快速截图：两块屏各一次；剪贴板；保存目录不可写时的错误提示。
 - 托盘：快捷键设置（录制/保存/取消/恢复默认/冲突拒绝）、重新加载配置、兼容模式切换、开机自启、退出；单实例重复启动。
-- 显示变化：截图期间改分辨率/拔插显示器（应关闭遮罩）。
+- 显示变化：截图期间改分辨率/拔插显示器（应关闭遮罩并重新约束钉图）。
 - 日志：失败路径有 `backend ... failed` / `fallback`，成功路径有 `captured ... mode=... with ...`。
 
 ### 6.3 颜色验证配方
@@ -289,6 +311,7 @@ cargo test --all-targets --locked
 2. 绘制加在 `overlay/window.rs::paint_session` 的正确顺序（帧 → 压暗 → 选区 → 边框/标签 → 工具条 → 取色 → 强制 alpha）。
 3. 命中测试加在 `overlay/mod.rs` 的鼠标路径，保持锁定/非锁定状态机一致。
 4. 纯逻辑（布局/命中/格式化）补单测；颜色/DPI 现场验证。
+5. 钉图 UI 不要加进 `overlay/window.rs`：窗口/绘制/输入在 `pin/window.rs`，纯几何在 `pin/geometry.rs`，生命周期/钩子在 `pin/mod.rs`；共享 DIB 创建/释放和光标映射时使用已提升为 `pub(crate)` 的 `overlay::window` 辅助函数。
 
 ### 7.5 修改抓取后端/颜色格式
 
@@ -314,11 +337,11 @@ cargo test --all-targets --locked
    - `Cargo.lock` 由 `cargo` 自动更新（提交它）。
 2. 跑 3.1 全部门禁；涉及截图/UI 的改动先过 6.2/6.3。
 3. 提交并推送 `main`。
-4. 打**附注标签**（与既有 `v0.1.0`~`v0.1.3` 风格一致）：
+4. 打**附注标签**（与既有 `v0.1.0`~`v0.1.4` 风格一致）：
 
    ```powershell
-   git tag -a v0.1.4 -m "ScreenShot FX 0.1.4"
-   git push origin v0.1.4
+   git tag -a v0.1.5 -m "ScreenShot FX 0.1.5"
+   git push origin v0.1.5
    ```
 
 5. 标签推送触发 `.github/workflows/release.yml`：校验标签/版本 → 测试 → Release 构建 → `package.ps1` → 上传产物 → 创建 GitHub Release。
@@ -327,11 +350,11 @@ cargo test --all-targets --locked
    ```powershell
    gh run list --workflow release.yml --limit 3
    gh run watch <run-id> --exit-status
-   gh release view v0.1.4
-   gh release download v0.1.4 --dir target\release-verify
+   gh release view v0.1.5
+   gh release download v0.1.5 --dir target\release-verify
    ```
 
-   下载后核对 `SHA256SUMS.txt`、`fxshot.exe` 的 `0.1.4.0` 版本、zip 内容。
+   下载后核对 `SHA256SUMS.txt`、`fxshot.exe` 的 `0.1.5.0` 版本、zip 内容。
 7. 不要移动/复用已发布标签；不要在有未提交改动时打标签。
 8. 本地构建与 CI 构建可能因 Rust 版本/链接环境不同而字节不同，**源码与标签**才是契约；不要用本地 hash 去要求 Release 资产一致。
 
@@ -367,6 +390,7 @@ cargo test --all-targets --locked
 - [ ] `fmt` / `clippy -D warnings` / `test` / `release build` 全部通过。
 - [ ] 受影响路径有测试：纯逻辑单测 + 至少一次真实 GDI 抓取；涉及 WGC/HDR 时在可用环境验证并记录。
 - [ ] 颜色模式（SDR/WCG/HDR）没有被混用；WCG 没有被 tone map。
+- [ ] 钉图路径已验证：工具条入口、X/Esc、悬停滚轮/透明度、等比边框缩放、多钉图、显示变化、退出清理；临时鼠标钩子在最后一张钉图关闭后卸载。
 - [ ] 日志能说明每块屏的 `mode=` 与后端；失败有回退记录。
 - [ ] README/配置模板/CLI 帮助同步；版本只在发布时改。
 - [ ] 工作区干净、diff 只包含预期文件；发布时版本三处一致、标签为附注标签、Release 资产已校验。
@@ -380,3 +404,4 @@ cargo test --all-targets --locked
 - 构建/安装/打包：[scripts/build.ps1](scripts/build.ps1)、[scripts/install.ps1](scripts/install.ps1)、[scripts/package.ps1](scripts/package.ps1)
 - 颜色管线：[src/capture/hdr.rs](src/capture/hdr.rs)、[src/capture/mod.rs](src/capture/mod.rs)、[src/capture/wgc.rs](src/capture/wgc.rs)
 - 遮罩绘制：[src/overlay/mod.rs](src/overlay/mod.rs)、[src/overlay/window.rs](src/overlay/window.rs)
+- 钉图：[src/pin/mod.rs](src/pin/mod.rs)、[src/pin/window.rs](src/pin/window.rs)、[src/pin/geometry.rs](src/pin/geometry.rs)

@@ -34,6 +34,7 @@ use crate::logging;
 use crate::monitor;
 use crate::naming;
 use crate::overlay;
+use crate::pin;
 use crate::win_util;
 
 const MAIN_CLASS: &str = "FxShotMainWindow";
@@ -912,6 +913,7 @@ fn show_about(hwnd: HWND) {
 
 fn cleanup(hwnd: HWND) {
     overlay::finish();
+    pin::close_all();
     unregister_hotkeys(hwnd);
     remove_tray_icon(hwnd);
     unsafe {
@@ -961,6 +963,14 @@ unsafe extern "system" fn wnd_proc(
             overlay::handle_key(wparam.0 as u32, lparam.0 as u32);
             LRESULT(0)
         }
+        pin::WM_APP_PIN_CLOSE => {
+            pin::handle_close_message(HWND(wparam.0 as *mut core::ffi::c_void));
+            LRESULT(0)
+        }
+        pin::WM_APP_PIN_WHEEL => {
+            pin::handle_wheel_message(HWND(wparam.0 as *mut core::ffi::c_void), lparam);
+            LRESULT(0)
+        }
         WM_TIMER => {
             if wparam.0 == TIMER_TRAY_RETRY && add_tray_icon(hwnd, false) {
                 logging::info("tray icon restored");
@@ -974,6 +984,7 @@ unsafe extern "system" fn wnd_proc(
             if overlay::is_active() {
                 overlay::finish();
             }
+            pin::on_display_change();
             LRESULT(0)
         }
         WM_QUERYENDSESSION => LRESULT(1),

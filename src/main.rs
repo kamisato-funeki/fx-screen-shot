@@ -11,6 +11,7 @@ mod logging;
 mod monitor;
 mod naming;
 mod overlay;
+mod pin;
 mod win_util;
 
 use std::path::PathBuf;
@@ -155,6 +156,7 @@ fn show_help() {
         默认快捷键（可在托盘菜单“快捷键设置…”中修改）：\n\
         Shift+F1：选区截图（悬停吸附窗口，拖拽选区，锁定后可拖动调整）\n\
         Shift 切换 RGB/HEX，C 复制色值，方向键 1px 微调，Ctrl+C 复制选区，Enter 保存\n\
+        工具条“钉图”把当前选区钉在桌面；滚轮缩放，Ctrl+滚轮调透明度，拖边框缩放，拖内部移动，X/Esc 关闭\n\
         Shift+F2：快速截图（鼠标所在显示器，静默保存）\n\n\
         命令行：\n\
         --capture-once [png] [--backend auto|gdi|wgc] [--monitor <序号|设备名>]\n\

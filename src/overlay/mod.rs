@@ -27,6 +27,7 @@ use crate::geometry::{Point, Rect};
 use crate::logging;
 use crate::monitor::{self, MonitorInfo};
 use crate::naming;
+use crate::pin::{self, PinRequest};
 use crate::win_util::{self, WindowInfo};
 
 use self::color::ColorFormat;
@@ -85,7 +86,7 @@ impl CursorKind {
         }
     }
 
-    fn from_hit(hit: edit::Hit) -> Self {
+    pub(crate) fn from_hit(hit: edit::Hit) -> Self {
         match hit {
             edit::Hit::Move => Self::Move,
             edit::Hit::Resize(handle) => Self::from_handle(handle),
@@ -122,6 +123,7 @@ pub struct OverlaySession {
     pub shift_down: bool,
     pub shift_armed: bool,
     pub copy_notice: Option<(String, Instant)>,
+    pub pending_pin: Option<PinRequest>,
     pub close_requested: bool,
     pub hook: Option<keyboard::KeyboardHook>,
 }
@@ -203,6 +205,7 @@ pub fn start(
         shift_down,
         shift_armed: !shift_down,
         copy_notice: None,
+        pending_pin: None,
         close_requested: false,
         hook: None,
     };
@@ -300,12 +303,22 @@ pub fn start(
 
 pub fn finish() {
     let session = SESSION.with(|cell| cell.borrow_mut().take());
-    if let Some(mut session) = session {
+    let pending_pin = if let Some(mut session) = session {
         session.hook = None;
         for overlay in session.overlays.drain(..) {
             overlay.destroy();
         }
         logging::info("selection overlay closed");
+        session.pending_pin.take()
+    } else {
+        None
+    };
+    if let Some(request) = pending_pin {
+        let main_hwnd = request.main_hwnd;
+        if let Err(err) = pin::create(request) {
+            logging::error(&format!("pin create failed: {err:#}"));
+            crate::app::notify_error(main_hwnd, &format!("钉图失败：{err:#}"));
+        }
     }
     window::set_cursor(CursorKind::Arrow);
 }
@@ -798,8 +811,38 @@ impl OverlaySession {
             toolbar::BUTTON_CANCEL => self.request_close(),
             toolbar::BUTTON_SAVE => self.save_or_copy(false),
             toolbar::BUTTON_COPY => self.save_or_copy(true),
+            toolbar::BUTTON_PIN => self.pin_selection(),
             _ => {}
         }
+    }
+
+    fn pin_selection(&mut self) {
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let rect = selection.intersection(self.frame.bounds());
+        if rect.is_empty() {
+            self.notify_error("截图范围为空");
+            return;
+        }
+        let Some(image) = self.frame.crop_bgra(rect) else {
+            self.notify_error("截图范围为空");
+            return;
+        };
+        logging::info(&format!(
+            "pin requested {}x{} at ({}, {})",
+            rect.width(),
+            rect.height(),
+            rect.left,
+            rect.top
+        ));
+        self.pending_pin = Some(PinRequest {
+            main_hwnd: self.main_hwnd,
+            image,
+            rect,
+            virtual_rect: self.virtual_rect,
+        });
+        self.request_close();
     }
 
     fn save_or_copy(&mut self, copy_only: bool) {

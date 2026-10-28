@@ -13,7 +13,8 @@ use crate::monitor::MonitorInfo;
 pub const BUTTON_CANCEL: usize = 0;
 pub const BUTTON_SAVE: usize = 1;
 pub const BUTTON_COPY: usize = 2;
-pub const LABELS: [&str; 3] = ["取消", "保存", "复制"];
+pub const BUTTON_PIN: usize = 3;
+pub const LABELS: [&str; 4] = ["取消", "保存", "复制", "钉图"];
 
 #[derive(Clone, Copy, Debug)]
 pub struct Metrics {
@@ -38,7 +39,8 @@ pub fn metrics(dpi: u32) -> Metrics {
 
 pub fn layout(selection: Rect, monitor: &MonitorInfo, dpi: u32) -> Rect {
     let m = metrics(dpi);
-    let width = m.button_w * 3 + m.pad * 4;
+    let count = LABELS.len() as i32;
+    let width = m.button_w * count + m.pad * (count + 1);
     let height = m.button_h + m.pad * 2;
 
     let mut x = selection.right - width;
@@ -61,10 +63,10 @@ pub fn layout(selection: Rect, monitor: &MonitorInfo, dpi: u32) -> Rect {
     Rect::new(x, y, x + width, y + height)
 }
 
-pub fn button_rects(toolbar: Rect, dpi: u32) -> [Rect; 3] {
+pub fn button_rects(toolbar: Rect, dpi: u32) -> [Rect; 4] {
     let m = metrics(dpi);
     let y = toolbar.top + m.pad;
-    let mut result = [Rect::default(); 3];
+    let mut result = [Rect::default(); 4];
     for (i, slot) in result.iter_mut().enumerate() {
         let x = toolbar.left + m.pad + i as i32 * (m.button_w + m.pad);
         *slot = Rect::new(x, y, x + m.button_w, y + m.button_h);
@@ -246,11 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn cancel_save_copy_are_right_aligned_in_that_order() {
-        assert_eq!(LABELS, ["取消", "保存", "复制"]);
+    fn cancel_save_copy_pin_are_right_aligned_in_that_order() {
+        assert_eq!(LABELS, ["取消", "保存", "复制", "钉图"]);
         assert_eq!(BUTTON_CANCEL, 0);
         assert_eq!(BUTTON_SAVE, 1);
         assert_eq!(BUTTON_COPY, 2);
+        assert_eq!(BUTTON_PIN, 3);
 
         let selection = Rect::new(100, 100, 500, 400);
         let dpi = 96;
@@ -260,18 +263,26 @@ mod tests {
         let buttons = button_rects(toolbar, dpi);
         assert!(buttons[BUTTON_CANCEL].right <= buttons[BUTTON_SAVE].left);
         assert!(buttons[BUTTON_SAVE].right <= buttons[BUTTON_COPY].left);
-        assert_eq!(
-            button_at(toolbar, dpi, buttons[BUTTON_CANCEL].center()),
-            Some(BUTTON_CANCEL)
-        );
-        assert_eq!(
-            button_at(toolbar, dpi, buttons[BUTTON_SAVE].center()),
-            Some(BUTTON_SAVE)
-        );
-        assert_eq!(
-            button_at(toolbar, dpi, buttons[BUTTON_COPY].center()),
-            Some(BUTTON_COPY)
-        );
+        assert!(buttons[BUTTON_COPY].right <= buttons[BUTTON_PIN].left);
+        for (index, button) in buttons.iter().enumerate() {
+            assert_eq!(button_at(toolbar, dpi, button.center()), Some(index));
+        }
+    }
+
+    #[test]
+    fn four_button_toolbar_fits_at_high_dpi() {
+        let selection = Rect::new(100, 100, 500, 400);
+        let monitor = monitor();
+        for dpi in [96, 144, 192] {
+            let toolbar = layout(selection, &monitor, dpi);
+            assert!(toolbar.left >= monitor.rect.left);
+            assert!(toolbar.right <= monitor.rect.right);
+            let buttons = button_rects(toolbar, dpi);
+            assert_eq!(buttons.len(), LABELS.len());
+            for button in buttons {
+                assert!(toolbar.contains(button.center()));
+            }
+        }
     }
 
     #[test]
@@ -290,6 +301,10 @@ mod tests {
         assert_eq!(
             button_at(toolbar, dpi, buttons[BUTTON_COPY].center()),
             Some(BUTTON_COPY)
+        );
+        assert_eq!(
+            button_at(toolbar, dpi, buttons[BUTTON_PIN].center()),
+            Some(BUTTON_PIN)
         );
         assert_eq!(button_at(toolbar, dpi, Point::new(0, 0)), None);
     }

@@ -146,6 +146,7 @@ jobs:
             **游戏快速截图：安装后按 `Shift+F2`，静默保存到 `图片\fx`。**
 
             - `Shift+F1`：冻结屏幕并进入选区截图
+            - `Shift+F1` 选区后点工具条“钉图”：把选区钉在桌面；滚轮缩放、`Ctrl+滚轮` 调透明度、拖边框缩放、拖内部移动、X/Esc 关闭
             - `Shift+F2`：截取鼠标所在显示器，无遮罩、无提示音，适合游戏
             - 下载 `fxshot-${{ steps.meta.outputs.version }}-windows-x64.zip`，解压后运行 `scripts\install.ps1`
             - `fxshot.exe` 为单文件绿色版，可直接运行
